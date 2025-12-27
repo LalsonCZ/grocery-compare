@@ -12,7 +12,7 @@ export default function AuthCallbackPage() {
       const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
       if (!url || !anon) {
-        console.error("Missing Supabase env vars", { url: !!url, anon: !!anon });
+        console.error("Missing Supabase env vars");
         return;
       }
 
@@ -23,11 +23,11 @@ export default function AuthCallbackPage() {
         await supabase.auth.exchangeCodeForSession(code);
       }
 
-      window.location.href = "/dashboard";
+      window.location.replace("/dashboard");
     }
 
     finishLogin();
   }, []);
 
-  return <p style={{ padding: 24 }}>Finishing login...</p>;
+  return <p style={{ padding: 24 }}>Signing you in…</p>;
 }
