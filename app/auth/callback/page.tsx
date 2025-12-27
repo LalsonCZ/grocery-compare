@@ -1,19 +1,28 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useEffect } from "react";
-import { supabase } from "@/lib/supabaseClient";
+import { createClient } from "@supabase/supabase-js";
 
 export default function AuthCallbackPage() {
   useEffect(() => {
     async function finishLogin() {
-      // If the magic link contains a ?code=... we exchange it for a session
-      const code = new URLSearchParams(window.location.search).get("code");
+      const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
+      if (!url || !anon) {
+        console.error("Missing Supabase env vars", { url: !!url, anon: !!anon });
+        return;
+      }
+
+      const supabase = createClient(url, anon);
+
+      const code = new URLSearchParams(window.location.search).get("code");
       if (code) {
         await supabase.auth.exchangeCodeForSession(code);
       }
 
-      // Now we should have a session (if login succeeded)
       window.location.href = "/dashboard";
     }
 
