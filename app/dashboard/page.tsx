@@ -1,122 +1,81 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import Link from "next/link";
-import { supabase } from "@/lib/supabaseClient";
+export const dynamic = "force-dynamic";
 
-type Basket = {
-  id: string;
-  name: string;
-  created_at: string;
-};
+import { useEffect, useState } from "react";
+import { getSupabaseBrowserClient } from "@/lib/supabaseClient";
 
 export default function DashboardPage() {
-  const [email, setEmail] = useState<string | null>(null);
-  const [baskets, setBaskets] = useState<Basket[]>([]);
-  const [name, setName] = useState("");
   const [loading, setLoading] = useState(true);
-  const [msg, setMsg] = useState<string | null>(null);
-
-  async function load() {
-    setLoading(true);
-
-    const { data: sessionData } = await supabase.auth.getSession();
-    const user = sessionData.session?.user;
-
-    if (!user) {
-      window.location.href = "/login";
-      return;
-    }
-
-    setEmail(user.email ?? null);
-
-    const { data, error } = await supabase
-      .from("baskets")
-      .select("*")
-      .order("created_at", { ascending: false });
-
-    if (error) setMsg(error.message);
-    else setBaskets((data as Basket[]) ?? []);
-
-    setLoading(false);
-  }
+  const [email, setEmail] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    load();
+    async function loadUser() {
+      try {
+        const supabase = getSupabaseBrowserClient();
+
+        const { data, error } = await supabase.auth.getUser();
+        if (error) {
+          setError(error.message);
+          setLoading(false);
+          return;
+        }
+
+        const userEmail = data.user?.email ?? null;
+
+        // Not logged in → go to login
+        if (!userEmail) {
+          window.location.replace("/login");
+          return;
+        }
+
+        setEmail(userEmail);
+      } catch (e: any) {
+        setError(e?.message ?? "Unknown error");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadUser();
   }, []);
 
-  async function createBasket(e: React.FormEvent) {
-    e.preventDefault();
-    setMsg(null);
-
-    const { data: sessionData } = await supabase.auth.getSession();
-    const user = sessionData.session?.user;
-    if (!user) return;
-
-    if (!name.trim()) return;
-
-    const { error } = await supabase.from("baskets").insert({
-      user_id: user.id,
-      name: name.trim(),
-    });
-
-    if (error) setMsg(error.message);
-    else {
-      setName("");
-      await load();
+  async function signOut() {
+    try {
+      const supabase = getSupabaseBrowserClient();
+      await supabase.auth.signOut();
+    } finally {
+      window.location.replace("/login");
     }
   }
 
-  async function logout() {
-    await supabase.auth.signOut();
-    window.location.href = "/login";
+  if (loading) {
+    return <p style={{ padding: 24 }}>Loading dashboard…</p>;
   }
 
-  if (loading) return <p style={{ padding: 24 }}>Loading...</p>;
+  if (error) {
+    return (
+      <main style={{ padding: 24, fontFamily: "system-ui" }}>
+        <h1>Dashboard</h1>
+        <p style={{ color: "crimson" }}>Error: {error}</p>
+        <button onClick={() => window.location.reload()}>Reload</button>
+      </main>
+    );
+  }
 
   return (
-    <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 800 }}>
-      <h1>Dashboard</h1>
+    <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 720 }}>
+      <h1 style={{ marginTop: 0 }}>Dashboard</h1>
+
       <p>
-        Logged in as: <strong>{email}</strong>
+        Logged in as: <b>{email}</b>
       </p>
 
-      <button onClick={logout} style={{ margin: "12px 0" }}>
-        Logout
-      </button>
-
-      <hr style={{ margin: "16px 0" }} />
-
-      <h2>Create basket</h2>
-      <form onSubmit={createBasket} style={{ display: "flex", gap: 8 }}>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="e.g. Weekend shopping"
-          style={{ padding: 10, width: 280 }}
-        />
-        <button type="submit" style={{ padding: "10px 14px" }}>
-          Create
-        </button>
-      </form>
-
-      {msg && <p style={{ marginTop: 12, color: "crimson" }}>{msg}</p>}
-
-      <h2 style={{ marginTop: 20 }}>Your baskets</h2>
-      {baskets.length === 0 ? (
-        <p>No baskets yet.</p>
-      ) : (
-        <ul style={{ paddingLeft: 18 }}>
-          {baskets.map((b) => (
-            <li key={b.id} style={{ marginBottom: 8 }}>
-              <Link href={`/basket/${b.id}`}>{b.name}</Link>{" "}
-              <small style={{ opacity: 0.7 }}>
-                ({new Date(b.created_at).toLocaleString()})
-              </small>
-            </li>
-          ))}
-        </ul>
-      )}
+      <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
+        <button onClick={signOut}>Sign out</button>
+        <button onClick={() => window.location.replace("/")}>Home</button>
+      </div>
     </main>
   );
 }
