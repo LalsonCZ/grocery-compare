@@ -54,7 +54,6 @@ export default function BasketIdPage() {
       return;
     }
 
-    // IMPORTANT: filter by user_id too (prevents RLS confusion + security)
     const { data: basketData, error: basketErr } = await supabase
       .from("baskets")
       .select("id,user_id,name,created_at")
@@ -69,7 +68,7 @@ export default function BasketIdPage() {
     }
 
     if (!basketData) {
-      setError("Still no basket (not found or not yours).");
+      setError("Basket not found (or not yours).");
       setBasket(null);
       setItems([]);
       setLoading(false);
@@ -78,7 +77,6 @@ export default function BasketIdPage() {
 
     setBasket(basketData as BasketRow);
 
-    // load items (requires RLS policy on basket_items)
     const { data: itemsData, error: itemsErr } = await supabase
       .from("basket_items")
       .select("id,basket_id,name,price,qty,created_at")
@@ -110,6 +108,15 @@ export default function BasketIdPage() {
     const price = newItemPrice.trim() ? Number(newItemPrice) : null;
     const qty = newItemQty.trim() ? Number(newItemQty) : 1;
 
+    if (newItemPrice.trim() && Number.isNaN(price)) {
+      setError("Price must be a number.");
+      return;
+    }
+    if (Number.isNaN(qty) || qty <= 0) {
+      setError("Qty must be a positive number.");
+      return;
+    }
+
     const { error: insErr } = await supabase.from("basket_items").insert({
       basket_id: basketId,
       name,
@@ -128,9 +135,30 @@ export default function BasketIdPage() {
     await load();
   };
 
-  if (loading) {
-    return <div style={{ padding: 24 }}>Loading...</div>;
-  }
+  const deleteItem = async (itemId: string) => {
+    setError(null);
+
+    const { error: delErr } = await supabase
+      .from("basket_items")
+      .delete()
+      .eq("id", itemId)
+      .eq("basket_id", basketId);
+
+    if (delErr) {
+      setError(delErr.message);
+      return;
+    }
+
+    setItems((prev) => prev.filter((x) => x.id !== itemId));
+  };
+
+  const total = items.reduce((sum, it) => {
+    const p = it.price ?? 0;
+    const q = it.qty ?? 0;
+    return sum + p * q;
+  }, 0);
+
+  if (loading) return <div style={{ padding: 24 }}>Loading...</div>;
 
   return (
     <div style={{ padding: 24, maxWidth: 900 }}>
@@ -153,7 +181,7 @@ export default function BasketIdPage() {
               border: "1px solid #ddd",
               borderRadius: 10,
               padding: 14,
-              marginBottom: 16,
+              marginBottom: 12,
             }}
           >
             <div style={{ fontWeight: 700, fontSize: 18 }}>
@@ -161,6 +189,24 @@ export default function BasketIdPage() {
             </div>
             <div style={{ fontFamily: "monospace", fontSize: 12 }}>
               id: {basket.id}
+            </div>
+          </div>
+
+          <div
+            style={{
+              border: "1px solid #ddd",
+              borderRadius: 10,
+              padding: 14,
+              marginBottom: 16,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 12,
+            }}
+          >
+            <div style={{ fontWeight: 700 }}>Total</div>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>
+              {total.toFixed(2)}
             </div>
           </div>
 
@@ -212,17 +258,18 @@ export default function BasketIdPage() {
                     display: "flex",
                     justifyContent: "space-between",
                     gap: 12,
+                    alignItems: "center",
                   }}
                 >
-                  <div>
-                    <div style={{ fontWeight: 700 }}>{it.name}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 800 }}>{it.name}</div>
                     <div style={{ fontSize: 13, color: "#555" }}>
-                      qty: {it.qty ?? 0} | price: {it.price ?? "-"}
+                      qty: {it.qty ?? 0} | price: {it.price ?? "-"} | line:{" "}
+                      {((it.price ?? 0) * (it.qty ?? 0)).toFixed(2)}
                     </div>
                   </div>
-                  <div style={{ fontFamily: "monospace", fontSize: 12 }}>
-                    {it.id}
-                  </div>
+
+                  <button onClick={() => deleteItem(it.id)}>Delete</button>
                 </div>
               ))}
             </div>
