@@ -1,40 +1,38 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { getSupabaseBrowserClient } from "@/lib/supabaseClient";
+import { useEffect } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
 
 export default function AuthCallbackPage() {
-  const [msg, setMsg] = useState("Signing you in...");
-
   useEffect(() => {
-    const run = async () => {
-      try {
-        const supabase = getSupabaseBrowserClient();
+    const finishLogin = async () => {
+      const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-        // With PKCE + detectSessionInUrl, Supabase will process the URL automatically.
-        const { data, error } = await supabase.auth.getSession();
-
-        if (error) {
-          setMsg(`Auth error: ${error.message}`);
-          return;
-        }
-
-        if (!data.session) {
-          setMsg("No session found. Please try logging in again.");
-          return;
-        }
-
-        // Clean URL + go dashboard
-        window.location.replace("/dashboard");
-      } catch (e: any) {
-        setMsg(`Unexpected error: ${e?.message ?? String(e)}`);
+      if (!url || !anon) {
+        console.error("Missing Supabase env vars");
+        return;
       }
+
+      const supabase = createClient(url, anon);
+
+      // ✅ THIS is the missing piece
+      const { data, error } = await supabase.auth.getSession();
+
+      if (error || !data.session) {
+        console.error("No session found", error);
+        window.location.replace("/login");
+        return;
+      }
+
+      // ✅ Session exists → redirect
+      window.location.replace("/dashboard");
     };
 
-    run();
+    finishLogin();
   }, []);
 
-  return <p style={{ padding: 24, fontFamily: "system-ui" }}>{msg}</p>;
+  return <p style={{ padding: 24 }}>Signing you in…</p>;
 }
