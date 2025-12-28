@@ -41,23 +41,22 @@ export default function DashboardPage() {
 
     setEmail(user.email ?? "");
 
-    // load baskets
-    const { data: list1, error: selErr1 } = await supabase
+    const { data, error: selErr } = await supabase
       .from("baskets")
       .select("id,name,created_at,user_id")
       .eq("user_id", user.id)
       .order("created_at", { ascending: false });
 
-    if (selErr1) {
-      setError(selErr1.message);
+    if (selErr) {
+      setError(selErr.message);
       setLoading(false);
       return;
     }
 
-    const existing = (list1 ?? []) as BasketRow[];
+    const list = (data ?? []) as BasketRow[];
 
-    // if none -> create default basket
-    if (existing.length === 0) {
+    // if none exists, create default
+    if (list.length === 0) {
       const { error: insErr } = await supabase.from("baskets").insert({
         user_id: user.id,
         name: "Nakup",
@@ -86,7 +85,7 @@ export default function DashboardPage() {
       return;
     }
 
-    setBaskets(existing);
+    setBaskets(list);
     setLoading(false);
   };
 
@@ -97,16 +96,10 @@ export default function DashboardPage() {
 
   const createBasket = async () => {
     setError(null);
-
     const name = newBasketName.trim();
     if (!name) return;
 
-    const { data: userRes, error: userErr } = await supabase.auth.getUser();
-    if (userErr) {
-      setError(userErr.message);
-      return;
-    }
-
+    const { data: userRes } = await supabase.auth.getUser();
     const user = userRes.user;
     if (!user) {
       setError("Not logged in.");
@@ -128,10 +121,8 @@ export default function DashboardPage() {
   };
 
   const deleteBasket = async (basketId: string, basketName: string) => {
-    setError(null);
-
     const ok = confirm(
-      `Delete basket "${basketName}"?\n\nThis will also delete all items inside it.`
+      `Delete basket "${basketName}"?\n\nAll items inside will be deleted.`
     );
     if (!ok) return;
 
@@ -151,7 +142,6 @@ export default function DashboardPage() {
     setBaskets((prev) => prev.filter((b) => b.id !== basketId));
     setBusyBasketId(null);
 
-    // if you deleted the last one, recreate default
     if (baskets.length === 1) {
       await loadBasketsAndEnsureDefault();
     }
@@ -162,7 +152,9 @@ export default function DashboardPage() {
     window.location.href = "/";
   };
 
-  if (loading) return <div style={{ padding: 24 }}>Loading...</div>;
+  if (loading) {
+    return <div style={{ padding: 24 }}>Loading...</div>;
+  }
 
   return (
     <div style={{ padding: 24, maxWidth: 900 }}>
@@ -174,11 +166,16 @@ export default function DashboardPage() {
           <button onClick={logout}>Logout</button>{" "}
           <Link href="/" style={{ marginLeft: 12 }}>
             Home
+          </Link>{" "}
+          <Link href="/compare" style={{ marginLeft: 12, fontWeight: 700 }}>
+            Compare →
           </Link>
         </div>
       </div>
 
-      {error && <div style={{ color: "crimson", marginBottom: 16 }}>{error}</div>}
+      {error && (
+        <div style={{ color: "crimson", marginBottom: 16 }}>{error}</div>
+      )}
 
       <div
         style={{
@@ -193,7 +190,7 @@ export default function DashboardPage() {
           <input
             value={newBasketName}
             onChange={(e) => setNewBasketName(e.target.value)}
-            placeholder="e.g. Novy basket"
+            placeholder="e.g. Lidl / Tesco"
             style={{ padding: 10, width: 320 }}
           />
           <button onClick={createBasket}>Create</button>
@@ -201,13 +198,14 @@ export default function DashboardPage() {
       </div>
 
       <h3>Your baskets</h3>
+
       {baskets.length === 0 ? (
         <div>No baskets yet.</div>
       ) : (
         <div style={{ display: "grid", gap: 12 }}>
           {baskets.map((b) => {
             const busy = busyBasketId === b.id;
-            const displayName = b.name ?? "(no name)";
+            const name = b.name ?? "(no name)";
             return (
               <div
                 key={b.id}
@@ -222,8 +220,10 @@ export default function DashboardPage() {
                 }}
               >
                 <div>
-                  <div style={{ fontWeight: 700, fontSize: 18 }}>{displayName}</div>
-                  <div style={{ fontFamily: "monospace", fontSize: 12 }}>id: {b.id}</div>
+                  <div style={{ fontWeight: 700, fontSize: 18 }}>{name}</div>
+                  <div style={{ fontFamily: "monospace", fontSize: 12 }}>
+                    id: {b.id}
+                  </div>
                 </div>
 
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -232,7 +232,7 @@ export default function DashboardPage() {
                   </Link>
                   <button
                     disabled={busy}
-                    onClick={() => deleteBasket(b.id, displayName)}
+                    onClick={() => deleteBasket(b.id, name)}
                     style={{ color: "crimson" }}
                   >
                     {busy ? "Deleting..." : "Delete"}
