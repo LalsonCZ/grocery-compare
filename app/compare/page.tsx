@@ -21,10 +21,10 @@ type BasketItemRow = {
 };
 
 type AggRow = {
-  key: string; // normalized key
+  key: string;
   displayName: string;
   qty: number;
-  total: number; // qty * price summed
+  total: number;
 };
 
 type CompareMode = "unit" | "line";
@@ -42,10 +42,17 @@ type CompareRow = {
   bTotal: number;
 
   cheaper: "A" | "B" | "Same" | "-";
-  delta: number; // A - B (unit or line, depends on mode)
+  delta: number; // A - B (unit or line)
   matchType: "exact" | "fuzzy";
   aRawKey?: string;
   bRawKey?: string;
+};
+
+type BestItem = {
+  name: string;
+  qty: number;
+  price: number;
+  source: "A" | "B" | "Same";
 };
 
 function money(n: number) {
@@ -57,13 +64,12 @@ function normalizeBase(input: string) {
     .trim()
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "") // remove diacritics
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-// a stronger normalization for keys
 function normalizeKey(input: string) {
   return normalizeBase(input);
 }
@@ -74,7 +80,6 @@ function tokenize(input: string) {
   return s.split(" ").filter(Boolean);
 }
 
-// very simple similarity: Jaccard tokens + prefix bonus
 function similarity(aName: string, bName: string) {
   const a = tokenize(aName);
   const b = tokenize(bName);
@@ -89,13 +94,10 @@ function similarity(aName: string, bName: string) {
   const union = setA.size + setB.size - inter;
   const jaccard = union === 0 ? 0 : inter / union;
 
-  // prefix / contains bonus (helps "rohlik" vs "rohliky")
   const aStr = a.join(" ");
   const bStr = b.join(" ");
-  const containsBonus =
-    aStr.includes(bStr) || bStr.includes(aStr) ? 0.15 : 0;
+  const containsBonus = aStr.includes(bStr) || bStr.includes(aStr) ? 0.15 : 0;
 
-  // small suffix plural-ish bonus (rohlik vs rohliky)
   const lastA = a[a.length - 1] ?? "";
   const lastB = b[b.length - 1] ?? "";
   const pluralBonus =
@@ -122,12 +124,7 @@ function aggregate(items: BasketItemRow[]) {
 
     const prev = map.get(key);
     if (!prev) {
-      map.set(key, {
-        key,
-        displayName: name,
-        qty,
-        total: line,
-      });
+      map.set(key, { key, displayName: name, qty, total: line });
     } else {
       const betterName =
         prev.displayName.length >= name.length ? prev.displayName : name;
@@ -153,16 +150,15 @@ function unitPrice(row?: AggRow) {
   return row.total / row.qty;
 }
 
-/**
- * Match A & B aggregated maps:
- * 1) exact by normalized key
- * 2) fuzzy matching for remaining keys (greedy best-match)
- */
-function buildMatchedRows(aggA: Map<string, AggRow>, aggB: Map<string, AggRow>, mode: CompareMode) {
+function buildMatchedRows(
+  aggA: Map<string, AggRow>,
+  aggB: Map<string, AggRow>,
+  mode: CompareMode
+) {
   const usedB = new Set<string>();
   const rows: CompareRow[] = [];
 
-  // 1) exact matches
+  // exact
   for (const [key, a] of aggA.entries()) {
     const b = aggB.get(key);
     if (!b) continue;
@@ -203,31 +199,23 @@ function buildMatchedRows(aggA: Map<string, AggRow>, aggB: Map<string, AggRow>, 
     });
   }
 
-  // 2) fuzzy matches for remaining keys
+  // fuzzy
   const remainingA: AggRow[] = [];
   const remainingB: AggRow[] = [];
-
-  for (const a of aggA.values()) {
-    if (!aggB.has(a.key)) remainingA.push(a);
-  }
-  for (const b of aggB.values()) {
+  for (const a of aggA.values()) if (!aggB.has(a.key)) remainingA.push(a);
+  for (const b of aggB.values())
     if (!usedB.has(b.key) && !aggA.has(b.key)) remainingB.push(b);
-  }
 
-  // build candidate list with score
   type Cand = { aKey: string; bKey: string; score: number };
   const cands: Cand[] = [];
 
   for (const a of remainingA) {
     for (const b of remainingB) {
       const score = similarity(a.displayName, b.displayName);
-      if (score >= 0.6) {
-        cands.push({ aKey: a.key, bKey: b.key, score });
-      }
+      if (score >= 0.6) cands.push({ aKey: a.key, bKey: b.key, score });
     }
   }
 
-  // greedy by best score
   cands.sort((x, y) => y.score - x.score);
 
   const matchedA = new Set<string>();
@@ -243,7 +231,7 @@ function buildMatchedRows(aggA: Map<string, AggRow>, aggB: Map<string, AggRow>, 
     matchedA.add(c.aKey);
     matchedB.add(c.bKey);
 
-    const key = `${a.key}~${b.key}`; // synthetic key for row identity
+    const key = `${a.key}~${b.key}`;
 
     const aQty = a.qty;
     const aTotal = a.total;
@@ -279,7 +267,7 @@ function buildMatchedRows(aggA: Map<string, AggRow>, aggB: Map<string, AggRow>, 
     });
   }
 
-  // 3) leftovers: only-in-A and only-in-B (excluding fuzzy matched)
+  // leftovers
   for (const a of aggA.values()) {
     const isExact = aggB.has(a.key);
     const isFuzzy = matchedA.has(a.key);
@@ -298,7 +286,6 @@ function buildMatchedRows(aggA: Map<string, AggRow>, aggB: Map<string, AggRow>, 
       delta: mode === "unit" ? unitPrice(a) : a.total,
       matchType: "exact",
       aRawKey: a.key,
-      bRawKey: undefined,
     });
   }
 
@@ -317,14 +304,12 @@ function buildMatchedRows(aggA: Map<string, AggRow>, aggB: Map<string, AggRow>, 
       bUnit: unitPrice(b),
       bTotal: b.total,
       cheaper: "B",
-      delta: mode === "unit" ? -unitPrice(b) : -b.total, // A-B
+      delta: mode === "unit" ? -unitPrice(b) : -b.total,
       matchType: "exact",
-      aRawKey: undefined,
       bRawKey: b.key,
     });
   }
 
-  // sort: matched (both qty>0) first, then by absolute delta desc, then name
   rows.sort((r1, r2) => {
     const both1 = r1.aQty > 0 && r1.bQty > 0 ? 1 : 0;
     const both2 = r2.aQty > 0 && r2.bQty > 0 ? 1 : 0;
@@ -340,13 +325,6 @@ function buildMatchedRows(aggA: Map<string, AggRow>, aggB: Map<string, AggRow>, 
   return rows;
 }
 
-/**
- * Savings:
- * For matched rows where both sides exist, we compute savings for common quantity:
- * commonQty = min(aQty, bQty)
- * savings += commonQty * (max(unitA, unitB) - min(unitA, unitB))
- * This answers: "if you bought the common items in the cheaper store, how much would you save?"
- */
 function computeSavings(rows: CompareRow[]) {
   let savings = 0;
   for (const r of rows) {
@@ -357,6 +335,53 @@ function computeSavings(rows: CompareRow[]) {
     }
   }
   return savings;
+}
+
+// NEW: build best list + best total
+function buildBestList(rows: CompareRow[]): { bestItems: BestItem[]; bestTotal: number } {
+  const bestItems: BestItem[] = [];
+  let bestTotal = 0;
+
+  for (const r of rows) {
+    // determine qty to buy: take max qty (so you cover what either basket has)
+    const qty = Math.max(r.aQty, r.bQty);
+
+    // if only exists in one basket
+    if (r.aQty > 0 && r.bQty === 0) {
+      bestItems.push({ name: r.name, qty, price: r.aUnit, source: "A" });
+      bestTotal += qty * r.aUnit;
+      continue;
+    }
+    if (r.bQty > 0 && r.aQty === 0) {
+      bestItems.push({ name: r.name, qty, price: r.bUnit, source: "B" });
+      bestTotal += qty * r.bUnit;
+      continue;
+    }
+
+    // both exist
+    if (r.aQty > 0 && r.bQty > 0) {
+      if (Math.abs(r.aUnit - r.bUnit) < 0.000001) {
+        bestItems.push({ name: r.name, qty, price: r.aUnit, source: "Same" });
+        bestTotal += qty * r.aUnit;
+      } else if (r.aUnit < r.bUnit) {
+        bestItems.push({ name: r.name, qty, price: r.aUnit, source: "A" });
+        bestTotal += qty * r.aUnit;
+      } else {
+        bestItems.push({ name: r.name, qty, price: r.bUnit, source: "B" });
+        bestTotal += qty * r.bUnit;
+      }
+    }
+  }
+
+  // nice sorting: A/B/Same, then name
+  bestItems.sort((x, y) => {
+    const rank = (s: BestItem["source"]) => (s === "A" ? 0 : s === "B" ? 1 : 2);
+    const r = rank(x.source) - rank(y.source);
+    if (r !== 0) return r;
+    return x.name.localeCompare(y.name);
+  });
+
+  return { bestItems, bestTotal };
 }
 
 export default function ComparePage() {
@@ -371,7 +396,10 @@ export default function ComparePage() {
   const [itemsA, setItemsA] = useState<BasketItemRow[]>([]);
   const [itemsB, setItemsB] = useState<BasketItemRow[]>([]);
 
-  const [mode, setMode] = useState<CompareMode>("unit"); // (3) toggle
+  const [mode, setMode] = useState<CompareMode>("unit");
+
+  const [creatingBest, setCreatingBest] = useState(false);
+  const [createdBestId, setCreatedBestId] = useState<string | null>(null);
 
   const loadBaskets = async () => {
     setError(null);
@@ -431,6 +459,7 @@ export default function ComparePage() {
 
   const runCompare = async () => {
     setError(null);
+    setCreatedBestId(null);
 
     if (!basketA || !basketB) {
       setError("Select Basket A and Basket B.");
@@ -461,11 +490,8 @@ export default function ComparePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // auto-run compare when both selected
   useEffect(() => {
-    if (basketA && basketB && basketA !== basketB) {
-      runCompare();
-    }
+    if (basketA && basketB && basketA !== basketB) runCompare();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [basketA, basketB]);
 
@@ -481,10 +507,54 @@ export default function ComparePage() {
   const rows = useMemo(() => buildMatchedRows(aggA, aggB, mode), [aggA, aggB, mode]);
   const savings = useMemo(() => computeSavings(rows), [rows]);
 
+  const { bestItems, bestTotal } = useMemo(() => buildBestList(rows), [rows]);
+
   const matchedCount = rows.filter((r) => r.aQty > 0 && r.bQty > 0).length;
   const fuzzyCount = rows.filter((r) => r.matchType === "fuzzy").length;
   const onlyA = rows.filter((r) => r.aQty > 0 && r.bQty === 0).length;
   const onlyB = rows.filter((r) => r.bQty > 0 && r.aQty === 0).length;
+
+  const createBestBasket = async () => {
+    setError(null);
+    setCreatedBestId(null);
+
+    if (!basketA || !basketB) {
+      setError("Select Basket A and Basket B.");
+      return;
+    }
+    if (bestItems.length === 0) {
+      setError("No best items to create.");
+      return;
+    }
+
+    const aName = nameById(basketA);
+    const bName = nameById(basketB);
+
+    setCreatingBest(true);
+    try {
+      const res = await fetch("/api/create-best-basket", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          basketAName: aName,
+          basketBName: bName,
+          items: bestItems,
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok) {
+        setError(json?.error ?? "Failed to create best basket");
+        return;
+      }
+
+      setCreatedBestId(json.basketId);
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to create best basket");
+    } finally {
+      setCreatingBest(false);
+    }
+  };
 
   return (
     <div style={{ padding: 24, maxWidth: 1250 }}>
@@ -492,7 +562,7 @@ export default function ComparePage() {
         <Link href="/dashboard">← Back to dashboard</Link>
       </div>
 
-      <h2>Compare baskets (smart + fuzzy + savings)</h2>
+      <h2>Compare baskets</h2>
 
       {error && <div style={{ color: "crimson", marginBottom: 16 }}>{error}</div>}
 
@@ -544,7 +614,6 @@ export default function ComparePage() {
           Compare
         </button>
 
-        {/* (3) Toggle mode */}
         <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
           <div style={{ fontWeight: 700 }}>Compare by:</div>
           <select
@@ -586,13 +655,10 @@ export default function ComparePage() {
           </div>
         </div>
 
-        {/* (1) Savings */}
         <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 14 }}>
           <div style={{ fontWeight: 800 }}>Savings (common items)</div>
           <div style={{ fontSize: 22, fontWeight: 900 }}>{money(savings)}</div>
-          <div style={{ color: "#555", marginTop: 4 }}>
-            Based on min(qtyA, qtyB) × unit diff
-          </div>
+          <div style={{ color: "#555", marginTop: 4 }}>min(qtyA, qtyB) × unit diff</div>
         </div>
       </div>
 
@@ -601,6 +667,69 @@ export default function ComparePage() {
         <b>{onlyB}</b> | Mode: <b>{mode === "unit" ? "Unit price" : "Line total"}</b>
       </div>
 
+      {/* NEW: Best basket section */}
+      <div
+        style={{
+          border: "1px solid #ddd",
+          borderRadius: 10,
+          padding: 16,
+          marginBottom: 16,
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontWeight: 900, fontSize: 18 }}>Best choice list</div>
+            <div style={{ color: "#555" }}>
+              Estimated best total (buy each product where it&apos;s cheaper):{" "}
+              <b style={{ fontSize: 18 }}>{money(bestTotal)}</b>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <button onClick={createBestBasket} disabled={creatingBest || bestItems.length === 0}>
+              {creatingBest ? "Creating..." : "Create basket: Best (auto)"}
+            </button>
+
+            {createdBestId && (
+              <Link href={`/basket/${createdBestId}`} style={{ fontWeight: 800 }}>
+                Open Best →
+              </Link>
+            )}
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+          {bestItems.length === 0 ? (
+            <div>No items.</div>
+          ) : (
+            bestItems.map((it, idx) => (
+              <div
+                key={`${it.name}-${idx}`}
+                style={{
+                  border: "1px solid #eee",
+                  borderRadius: 10,
+                  padding: 12,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 10,
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 900 }}>{it.name}</div>
+                  <div style={{ color: "#555", fontSize: 13 }}>
+                    qty: {it.qty} | unit: {money(it.price)} | line: {money(it.qty * it.price)}
+                  </div>
+                </div>
+                <div style={{ fontWeight: 900 }}>
+                  {it.source === "Same" ? "Same" : it.source}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Main compare table */}
       <div style={{ border: "1px solid #ddd", borderRadius: 10, overflow: "hidden" }}>
         <div
           style={{
@@ -636,9 +765,9 @@ export default function ComparePage() {
               }}
             >
               <div>
-                <div style={{ fontWeight: 800 }}>{r.name}</div>
+                <div style={{ fontWeight: 900 }}>{r.name}</div>
                 <div style={{ fontFamily: "monospace", fontSize: 12, color: "#888" }}>
-                  {r.aRawKey && r.bRawKey && r.matchType === "fuzzy"
+                  {r.matchType === "fuzzy" && r.aRawKey && r.bRawKey
                     ? `A:${r.aRawKey} | B:${r.bRawKey}`
                     : `key: ${r.key}`}
                 </div>
@@ -672,21 +801,14 @@ export default function ComparePage() {
                 {r.aQty > 0 && r.bQty > 0 ? (r.cheaper === "Same" ? "Same" : r.cheaper) : r.cheaper}
               </div>
 
-              <div style={{ fontFamily: "monospace" }}>{r.aQty > 0 && r.bQty > 0 ? money(r.delta) : "-"}</div>
-
-              <div style={{ fontWeight: 800 }}>
-                {r.matchType === "exact" ? "Exact" : "Fuzzy"}
+              <div style={{ fontFamily: "monospace" }}>
+                {r.aQty > 0 && r.bQty > 0 ? money(r.delta) : "-"}
               </div>
+
+              <div style={{ fontWeight: 800 }}>{r.matchType === "exact" ? "Exact" : "Fuzzy"}</div>
             </div>
           ))
         )}
-      </div>
-
-      <div style={{ marginTop: 14, color: "#666", fontSize: 12 }}>
-        Notes:
-        <br />• Exact match = stejné normalizované jméno (lowercase + bez diakritiky + odstraněná interpunkce).
-        <br />• Fuzzy match = token similarity ≥ 0.6 (rohlík ~ rohliky, mléko 1l ~ mleko 1 l, coca-cola ~ coca cola).
-        <br />• Savings = úspora pro společné množství (min qty) při nákupu v levnějším košíku.
       </div>
     </div>
   );
