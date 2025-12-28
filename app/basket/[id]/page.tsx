@@ -7,24 +7,24 @@ import { getSupabaseBrowserClient } from "@/lib/supabaseClient";
 
 type BasketRow = {
   id: string;
-  name?: string | null;
-  created_at?: string | null;
+  user_id: string;
+  name: string;
+  created_at: string | null;
 };
 
 type BasketItemRow = {
   id: string;
   basket_id: string;
-  name?: string | null;
-  price?: number | null;
-  qty?: number | null;
-  created_at?: string | null;
+  user_id: string;
+  product_name: string;
+  quantity: number;
+  unit: string;
+  created_at: string | null;
 };
 
 export default function BasketIdPage() {
   const params = useParams<{ id: string }>();
   const rawId = params?.id;
-
-  // In some edge cases params can be string[]
   const basketId = Array.isArray(rawId) ? rawId[0] : rawId;
 
   const [loading, setLoading] = useState(true);
@@ -33,16 +33,11 @@ export default function BasketIdPage() {
   const [basket, setBasket] = useState<BasketRow | null>(null);
   const [items, setItems] = useState<BasketItemRow[]>([]);
 
-  // 🔧 If your Supabase tables are named differently, change only these 2 values:
   const TABLE_BASKETS = "baskets";
   const TABLE_ITEMS = "basket_items";
 
-  const total = useMemo(() => {
-    return items.reduce((sum, it) => {
-      const price = Number(it.price ?? 0);
-      const qty = Number(it.qty ?? 1);
-      return sum + price * qty;
-    }, 0);
+  const totalQty = useMemo(() => {
+    return items.reduce((sum, it) => sum + Number(it.quantity ?? 0), 0);
   }, [items]);
 
   useEffect(() => {
@@ -59,39 +54,32 @@ export default function BasketIdPage() {
         const supabase = getSupabaseBrowserClient();
 
         // Require login
-        const { data: userData } = await supabase.auth.getUser();
+        const { data: userData, error: userErr } = await supabase.auth.getUser();
+        if (userErr) throw userErr;
+
         if (!userData?.user) {
           window.location.replace("/login");
           return;
         }
 
-        // Load basket (optional)
+        // Load basket
         const basketRes = await supabase
           .from(TABLE_BASKETS)
-          .select("*")
+          .select("id,user_id,name,created_at")
           .eq("id", basketId)
           .maybeSingle();
 
-        if (basketRes.error) {
-          console.warn("Basket load error:", basketRes.error.message);
-        } else {
-          setBasket((basketRes.data as BasketRow) ?? null);
-        }
+        if (basketRes.error) throw basketRes.error;
+        setBasket((basketRes.data as BasketRow) ?? null);
 
         // Load items
         const itemsRes = await supabase
           .from(TABLE_ITEMS)
-          .select("*")
-          .eq("basket_id", basketId);
+          .select("id,basket_id,user_id,product_name,quantity,unit,created_at")
+          .eq("basket_id", basketId)
+          .order("created_at", { ascending: true });
 
-        if (itemsRes.error) {
-          throw new Error(
-            `Cannot load items from table "${TABLE_ITEMS}". ` +
-              `Update TABLE_ITEMS/TABLE_BASKETS in this file to match your DB. ` +
-              `Supabase says: ${itemsRes.error.message}`
-          );
-        }
-
+        if (itemsRes.error) throw itemsRes.error;
         setItems((itemsRes.data as BasketItemRow[]) ?? []);
       } catch (e: any) {
         setError(e?.message ?? "Unknown error");
@@ -121,10 +109,6 @@ export default function BasketIdPage() {
           <p style={{ margin: 0, color: "crimson" }}>
             <b>Error:</b> {error}
           </p>
-          <p style={{ marginTop: 10, opacity: 0.8 }}>
-            If your table names are not <code>baskets</code> / <code>basket_items</code>, edit{" "}
-            <code>TABLE_BASKETS</code> and <code>TABLE_ITEMS</code> near the top of this file.
-          </p>
         </div>
       )}
 
@@ -135,7 +119,7 @@ export default function BasketIdPage() {
 
             <div style={{ display: "grid", gap: 6 }}>
               <div>
-                <b>Name:</b> {basket?.name ?? "(no name)"}
+                <b>Name:</b> {basket?.name ?? "(not found)"}
               </div>
               <div>
                 <b>Created:</b> {basket?.created_at ?? "(unknown)"}
@@ -144,7 +128,7 @@ export default function BasketIdPage() {
                 <b>Items:</b> {items.length}
               </div>
               <div>
-                <b>Total:</b> {total.toFixed(2)}
+                <b>Total quantity:</b> {totalQty}
               </div>
             </div>
           </section>
@@ -169,7 +153,7 @@ export default function BasketIdPage() {
                     }}
                   >
                     <div>
-                      <div style={{ fontWeight: 600 }}>{it.name ?? "(unnamed item)"}</div>
+                      <div style={{ fontWeight: 600 }}>{it.product_name}</div>
                       <div style={{ opacity: 0.75, fontSize: 13 }}>
                         item id: <code>{it.id}</code>
                       </div>
@@ -177,14 +161,7 @@ export default function BasketIdPage() {
 
                     <div style={{ textAlign: "right" }}>
                       <div>
-                        Qty: <b>{it.qty ?? 1}</b>
-                      </div>
-                      <div>
-                        Price: <b>{Number(it.price ?? 0).toFixed(2)}</b>
-                      </div>
-                      <div style={{ marginTop: 6 }}>
-                        Subtotal:{" "}
-                        <b>{(Number(it.price ?? 0) * Number(it.qty ?? 1)).toFixed(2)}</b>
+                        Qty: <b>{it.quantity}</b> {it.unit}
                       </div>
                     </div>
                   </div>
