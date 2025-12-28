@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { getSupabaseBrowserClient } from "@/lib/supabaseClient";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -10,40 +10,29 @@ export default function LoginPage() {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setStatus(null);
 
-    if (!email.trim()) {
+    const trimmed = email.trim();
+    if (!trimmed) {
       setStatus("Please enter your email.");
       return;
     }
 
     setLoading(true);
-    setStatus("Sending login link...");
-
     try {
-      const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      const supabase = getSupabaseBrowserClient();
 
-      if (!url || !anon) {
-        setStatus("Missing Supabase env vars on this deployment.");
-        setLoading(false);
-        return;
-      }
-
-      const supabase = createClient(url, anon);
+      const redirectTo = `${window.location.origin}/auth/callback`;
 
       const { error } = await supabase.auth.signInWithOtp({
-        email: email.trim(),
+        email: trimmed,
         options: {
-          // Works on localhost AND on Vercel automatically
-          emailRedirectTo: `${window.location.origin}/auth/callback`,
+          emailRedirectTo: redirectTo,
         },
       });
 
-      if (error) {
-        setStatus(`Error: ${error.message}`);
-      } else {
-        setStatus("✅ Check your email for the login link.");
-      }
+      if (error) setStatus(`Error: ${error.message}`);
+      else setStatus("✅ Check your email for the magic link.");
     } catch (err: any) {
       setStatus(`Unexpected error: ${err?.message ?? String(err)}`);
     } finally {
@@ -52,48 +41,30 @@ export default function LoginPage() {
   }
 
   return (
-    <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 480 }}>
-      <h1 style={{ marginBottom: 12 }}>Login</h1>
-
+    <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 520 }}>
+      <h1 style={{ marginBottom: 8 }}>Login</h1>
       <p style={{ marginTop: 0, opacity: 0.75 }}>
         Enter your email and we’ll send you a magic link.
       </p>
 
-      <form onSubmit={onSubmit} style={{ display: "grid", gap: 12 }}>
+      <form onSubmit={onSubmit} style={{ display: "grid", gap: 12, maxWidth: 420 }}>
         <input
           type="email"
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          autoComplete="email"
-          required
-          style={{
-            padding: 10,
-            borderRadius: 8,
-            border: "1px solid #ccc",
-            fontSize: 16,
-          }}
+          style={{ padding: 12, fontSize: 16 }}
         />
 
         <button
           type="submit"
           disabled={loading}
-          style={{
-            padding: 10,
-            borderRadius: 8,
-            border: "1px solid #111",
-            fontSize: 16,
-            cursor: loading ? "not-allowed" : "pointer",
-          }}
+          style={{ padding: 12, fontSize: 16, cursor: loading ? "default" : "pointer" }}
         >
           {loading ? "Sending..." : "Send magic link"}
         </button>
 
-        {status && (
-          <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>
-            {status}
-          </p>
-        )}
+        {status && <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{status}</p>}
       </form>
     </main>
   );

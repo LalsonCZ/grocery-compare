@@ -1,7 +1,5 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -24,7 +22,10 @@ type BasketItemRow = {
 
 export default function BasketIdPage() {
   const params = useParams<{ id: string }>();
-  const basketId = params?.id;
+  const rawId = params?.id;
+
+  // In some edge cases params can be string[]
+  const basketId = Array.isArray(rawId) ? rawId[0] : rawId;
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -58,8 +59,8 @@ export default function BasketIdPage() {
         const supabase = getSupabaseBrowserClient();
 
         // Require login
-        const userRes = await supabase.auth.getUser();
-        if (!userRes.data.user) {
+        const { data: userData } = await supabase.auth.getUser();
+        if (!userData?.user) {
           window.location.replace("/login");
           return;
         }
@@ -72,7 +73,6 @@ export default function BasketIdPage() {
           .maybeSingle();
 
         if (basketRes.error) {
-          // Not fatal — we can still load items
           console.warn("Basket load error:", basketRes.error.message);
         } else {
           setBasket((basketRes.data as BasketRow) ?? null);
@@ -117,37 +117,21 @@ export default function BasketIdPage() {
       {loading && <p>Loading…</p>}
 
       {!loading && error && (
-        <div
-          style={{
-            padding: 12,
-            border: "1px solid #f3b4b4",
-            borderRadius: 8,
-          }}
-        >
+        <div style={{ padding: 12, border: "1px solid #f3b4b4", borderRadius: 8 }}>
           <p style={{ margin: 0, color: "crimson" }}>
             <b>Error:</b> {error}
           </p>
           <p style={{ marginTop: 10, opacity: 0.8 }}>
-            If your table names are not <code>baskets</code> /{" "}
-            <code>basket_items</code>, edit <code>TABLE_BASKETS</code> and{" "}
-            <code>TABLE_ITEMS</code> near the top of this file.
+            If your table names are not <code>baskets</code> / <code>basket_items</code>, edit{" "}
+            <code>TABLE_BASKETS</code> and <code>TABLE_ITEMS</code> near the top of this file.
           </p>
         </div>
       )}
 
       {!loading && !error && (
         <>
-          <section
-            style={{
-              marginTop: 18,
-              padding: 12,
-              border: "1px solid #ddd",
-              borderRadius: 8,
-            }}
-          >
-            <h2 style={{ marginTop: 0, marginBottom: 8, fontSize: 18 }}>
-              Details
-            </h2>
+          <section style={{ marginTop: 18, padding: 12, border: "1px solid #ddd", borderRadius: 8 }}>
+            <h2 style={{ marginTop: 0, marginBottom: 8, fontSize: 18 }}>Details</h2>
 
             <div style={{ display: "grid", gap: 6 }}>
               <div>
@@ -185,9 +169,7 @@ export default function BasketIdPage() {
                     }}
                   >
                     <div>
-                      <div style={{ fontWeight: 600 }}>
-                        {it.name ?? "(unnamed item)"}
-                      </div>
+                      <div style={{ fontWeight: 600 }}>{it.name ?? "(unnamed item)"}</div>
                       <div style={{ opacity: 0.75, fontSize: 13 }}>
                         item id: <code>{it.id}</code>
                       </div>
@@ -202,11 +184,7 @@ export default function BasketIdPage() {
                       </div>
                       <div style={{ marginTop: 6 }}>
                         Subtotal:{" "}
-                        <b>
-                          {(Number(it.price ?? 0) * Number(it.qty ?? 1)).toFixed(
-                            2
-                          )}
-                        </b>
+                        <b>{(Number(it.price ?? 0) * Number(it.qty ?? 1)).toFixed(2)}</b>
                       </div>
                     </div>
                   </div>

@@ -1,38 +1,63 @@
 "use client";
 
-import { useEffect } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { useEffect, useState } from "react";
+import { getSupabaseBrowserClient } from "@/lib/supabaseClient";
 
-export const dynamic = "force-dynamic";
+function getHashParams() {
+  const hash = window.location.hash?.startsWith("#") ? window.location.hash.slice(1) : "";
+  return new URLSearchParams(hash);
+}
 
 export default function AuthCallbackPage() {
+  const [msg, setMsg] = useState("Signing you in...");
+
   useEffect(() => {
-    const finishLogin = async () => {
-      const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    async function finish() {
+      try {
+        const supabase = getSupabaseBrowserClient();
 
-      if (!url || !anon) {
-        console.error("Missing Supabase env vars");
-        return;
+        // 1) handle ?code=...
+        const code = new URLSearchParams(window.location.search).get("code");
+        if (code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          if (error) {
+            setMsg(`❌ Login failed: ${error.message}`);
+            return;
+          }
+          window.location.replace("/dashboard");
+          return;
+        }
+
+        // 2) handle #access_token=...&refresh_token=...
+        const hashParams = getHashParams();
+        const access_token = hashParams.get("access_token");
+        const refresh_token = hashParams.get("refresh_token");
+
+        if (access_token && refresh_token) {
+          const { error } = await supabase.auth.setSession({ access_token, refresh_token });
+          if (error) {
+            setMsg(`❌ Login failed: ${error.message}`);
+            return;
+          }
+          window.location.replace("/dashboard");
+          return;
+        }
+
+        // 3) if nothing in URL, maybe session is already stored
+        const { data } = await supabase.auth.getSession();
+        if (data?.session) {
+          window.location.replace("/dashboard");
+          return;
+        }
+
+        setMsg("No session found. Please try logging in again.");
+      } catch (e: any) {
+        setMsg(`Unexpected error: ${e?.message ?? String(e)}`);
       }
+    }
 
-      const supabase = createClient(url, anon);
-
-      // ✅ THIS is the missing piece
-      const { data, error } = await supabase.auth.getSession();
-
-      if (error || !data.session) {
-        console.error("No session found", error);
-        window.location.replace("/login");
-        return;
-      }
-
-      // ✅ Session exists → redirect
-      window.location.replace("/dashboard");
-    };
-
-    finishLogin();
+    finish();
   }, []);
 
-  return <p style={{ padding: 24 }}>Signing you in…</p>;
+  return <p style={{ padding: 24 }}>{msg}</p>;
 }
