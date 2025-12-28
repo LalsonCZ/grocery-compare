@@ -1,189 +1,234 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabaseClient";
 
 type BasketRow = {
   id: string;
   user_id: string;
-  name: string;
+  name: string | null;
   created_at: string | null;
 };
 
-export default function DashboardPage() {
-  const [email, setEmail] = useState<string>("");
+type BasketItemRow = {
+  id: string;
+  basket_id: string;
+  name: string | null;
+  price: number | null;
+  qty: number | null;
+  created_at: string | null;
+};
+
+export default function BasketIdPage() {
+  const params = useParams<{ id: string }>();
+  const rawId = params?.id;
+  const basketId = Array.isArray(rawId) ? rawId[0] : rawId;
+
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [baskets, setBaskets] = useState<BasketRow[]>([]);
-  const [newName, setNewName] = useState("");
+  const [basket, setBasket] = useState<BasketRow | null>(null);
+  const [items, setItems] = useState<BasketItemRow[]>([]);
 
-  async function load() {
-    try {
-      setLoading(true);
-      setError(null);
+  const [newItemName, setNewItemName] = useState("");
+  const [newItemPrice, setNewItemPrice] = useState("");
+  const [newItemQty, setNewItemQty] = useState("1");
 
-      const supabase = getSupabaseBrowserClient();
+  const load = async () => {
+    setLoading(true);
+    setError(null);
 
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
-      if (userErr) throw userErr;
-
-      if (!userData?.user) {
-        window.location.replace("/login");
-        return;
-      }
-
-      setEmail(userData.user.email ?? "");
-
-      const { data, error } = await supabase
-        .from("baskets")
-        .select("id,user_id,name,created_at")
-        .order("created_at", { ascending: false });
-
-      if (error) throw error;
-
-      setBaskets((data as BasketRow[]) ?? []);
-    } catch (e: any) {
-      setError(e?.message ?? "Unknown error");
-    } finally {
+    const { data: userRes, error: userErr } = await supabase.auth.getUser();
+    if (userErr) {
+      setError(userErr.message);
       setLoading(false);
+      return;
     }
-  }
+    const user = userRes.user;
+    if (!user) {
+      setError("Not logged in.");
+      setLoading(false);
+      return;
+    }
+
+    // IMPORTANT: filter by user_id too (prevents RLS confusion + security)
+    const { data: basketData, error: basketErr } = await supabase
+      .from("baskets")
+      .select("id,user_id,name,created_at")
+      .eq("id", basketId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (basketErr) {
+      setError(basketErr.message);
+      setLoading(false);
+      return;
+    }
+
+    if (!basketData) {
+      setError("Still no basket (not found or not yours).");
+      setBasket(null);
+      setItems([]);
+      setLoading(false);
+      return;
+    }
+
+    setBasket(basketData as BasketRow);
+
+    // load items (requires RLS policy on basket_items)
+    const { data: itemsData, error: itemsErr } = await supabase
+      .from("basket_items")
+      .select("id,basket_id,name,price,qty,created_at")
+      .eq("basket_id", basketId)
+      .order("created_at", { ascending: false });
+
+    if (itemsErr) {
+      setError(itemsErr.message);
+      setLoading(false);
+      return;
+    }
+
+    setItems((itemsData ?? []) as BasketItemRow[]);
+    setLoading(false);
+  };
 
   useEffect(() => {
+    if (!basketId) return;
     load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [basketId]);
 
-  async function createBasket() {
-    try {
-      setBusy(true);
-      setError(null);
+  const addItem = async () => {
+    setError(null);
 
-      const name = newName.trim();
-      if (!name) {
-        setError("Please enter basket name.");
-        return;
-      }
+    const name = newItemName.trim();
+    if (!name) return;
 
-      const supabase = getSupabaseBrowserClient();
+    const price = newItemPrice.trim() ? Number(newItemPrice) : null;
+    const qty = newItemQty.trim() ? Number(newItemQty) : 1;
 
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
-      if (userErr) throw userErr;
-      if (!userData?.user) {
-        window.location.replace("/login");
-        return;
-      }
+    const { error: insErr } = await supabase.from("basket_items").insert({
+      basket_id: basketId,
+      name,
+      price,
+      qty,
+    });
 
-      const { error } = await supabase.from("baskets").insert({
-        user_id: userData.user.id,
-        name,
-      });
-
-      if (error) throw error;
-
-      setNewName("");
-      await load();
-    } catch (e: any) {
-      setError(e?.message ?? "Unknown error");
-    } finally {
-      setBusy(false);
+    if (insErr) {
+      setError(insErr.message);
+      return;
     }
-  }
 
-  async function logout() {
-    const supabase = getSupabaseBrowserClient();
-    await supabase.auth.signOut();
-    window.location.replace("/login");
+    setNewItemName("");
+    setNewItemPrice("");
+    setNewItemQty("1");
+    await load();
+  };
+
+  if (loading) {
+    return <div style={{ padding: 24 }}>Loading...</div>;
   }
 
   return (
-    <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 900 }}>
-      <h1 style={{ marginBottom: 6 }}>Dashboard</h1>
-      <p style={{ marginTop: 0, opacity: 0.8 }}>Logged in as: {email || "—"}</p>
+    <div style={{ padding: 24, maxWidth: 900 }}>
+      <div style={{ marginBottom: 16 }}>
+        <Link href="/dashboard">← Back to dashboard</Link>
+      </div>
 
-      <button onClick={logout} style={{ padding: "8px 12px", marginBottom: 18 }}>
-        Logout
-      </button>
+      <h2>Basket</h2>
 
-      {loading && <p>Loading…</p>}
-
-      {!loading && error && (
-        <div style={{ padding: 12, border: "1px solid #f3b4b4", borderRadius: 8 }}>
-          <p style={{ margin: 0, color: "crimson" }}>
-            <b>Error:</b> {error}
-          </p>
-        </div>
+      {error && (
+        <div style={{ color: "crimson", marginBottom: 16 }}>{error}</div>
       )}
 
-      {!loading && !error && (
+      {!basket ? (
+        <div>No basket.</div>
+      ) : (
         <>
-          <section
+          <div
             style={{
-              padding: 12,
               border: "1px solid #ddd",
-              borderRadius: 8,
-              marginBottom: 18,
+              borderRadius: 10,
+              padding: 14,
+              marginBottom: 16,
             }}
           >
-            <h2 style={{ marginTop: 0, fontSize: 18 }}>Create basket</h2>
-
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <input
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                placeholder="e.g. Nakup"
-                style={{ padding: 10, minWidth: 260 }}
-              />
-              <button
-                onClick={createBasket}
-                disabled={busy}
-                style={{ padding: "10px 14px" }}
-              >
-                {busy ? "Creating…" : "Create"}
-              </button>
+            <div style={{ fontWeight: 700, fontSize: 18 }}>
+              {basket.name ?? "(no name)"}
             </div>
-          </section>
+            <div style={{ fontFamily: "monospace", fontSize: 12 }}>
+              id: {basket.id}
+            </div>
+          </div>
 
-          <section>
-            <h2 style={{ marginTop: 0, fontSize: 18 }}>Your baskets</h2>
+          <div
+            style={{
+              border: "1px solid #ddd",
+              borderRadius: 10,
+              padding: 16,
+              marginBottom: 20,
+            }}
+          >
+            <h3>Add item</h3>
 
-            {baskets.length === 0 ? (
-              <p>No baskets yet. Create one above.</p>
-            ) : (
-              <div style={{ display: "grid", gap: 10 }}>
-                {baskets.map((b) => (
-                  <div
-                    key={b.id}
-                    style={{
-                      padding: 12,
-                      border: "1px solid #eee",
-                      borderRadius: 8,
-                      display: "flex",
-                      justifyContent: "space-between",
-                      gap: 12,
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 700 }}>{b.name}</div>
-                      <div style={{ opacity: 0.75, fontSize: 13 }}>
-                        id: <code>{b.id}</code>
-                      </div>
-                    </div>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <input
+                value={newItemName}
+                onChange={(e) => setNewItemName(e.target.value)}
+                placeholder="Item name"
+                style={{ padding: 10, width: 260 }}
+              />
+              <input
+                value={newItemPrice}
+                onChange={(e) => setNewItemPrice(e.target.value)}
+                placeholder="Price"
+                style={{ padding: 10, width: 140 }}
+              />
+              <input
+                value={newItemQty}
+                onChange={(e) => setNewItemQty(e.target.value)}
+                placeholder="Qty"
+                style={{ padding: 10, width: 100 }}
+              />
+              <button onClick={addItem}>Add</button>
+            </div>
+          </div>
 
-                    <div style={{ textAlign: "right" }}>
-                      <Link href={`/basket/${b.id}`}>Open →</Link>
+          <h3>Items</h3>
+          {items.length === 0 ? (
+            <div>No items yet.</div>
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {items.map((it) => (
+                <div
+                  key={it.id}
+                  style={{
+                    border: "1px solid #eee",
+                    borderRadius: 10,
+                    padding: 12,
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 12,
+                  }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 700 }}>{it.name}</div>
+                    <div style={{ fontSize: 13, color: "#555" }}>
+                      qty: {it.qty ?? 0} | price: {it.price ?? "-"}
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </section>
+                  <div style={{ fontFamily: "monospace", fontSize: 12 }}>
+                    {it.id}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </>
       )}
-    </main>
+    </div>
   );
 }

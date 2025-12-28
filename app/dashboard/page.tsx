@@ -1,171 +1,182 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabaseClient";
 
 type BasketRow = {
   id: string;
-  user_id: string;
-  name: string;
+  name: string | null;
   created_at: string | null;
 };
 
 export default function DashboardPage() {
-  const [email, setEmail] = useState<string>("");
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState(false);
+  const [email, setEmail] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+
   const [baskets, setBaskets] = useState<BasketRow[]>([]);
+  const [newBasketName, setNewBasketName] = useState("");
 
-  useEffect(() => {
-    let cancelled = false;
+  const loadUserAndBaskets = async () => {
+    setError(null);
+    setLoading(true);
 
-    async function run() {
-      setLoading(true);
-      setError(null);
-
-      try {
-        const supabase = getSupabaseBrowserClient();
-
-        // 1) Must be logged in
-        const { data: userData, error: userErr } = await supabase.auth.getUser();
-        if (userErr) throw userErr;
-
-        const user = userData.user;
-        if (!user) {
-          window.location.replace("/login");
-          return;
-        }
-
-        if (!cancelled) setEmail(user.email ?? "");
-
-        // 2) Load baskets (RLS will filter to user_id = auth.uid())
-        const { data: existing, error: loadErr } = await supabase
-          .from("baskets")
-          .select("*")
-          .order("created_at", { ascending: false });
-
-        if (loadErr) throw loadErr;
-
-        // 3) If none exist, create one automatically
-        if (!existing || existing.length === 0) {
-          if (!cancelled) setCreating(true);
-
-          const defaultName = "My first basket";
-
-          const { data: inserted, error: insErr } = await supabase
-            .from("baskets")
-            .insert({
-              user_id: user.id, // IMPORTANT for your RLS policy
-              name: defaultName,
-            })
-            .select("*");
-
-          if (insErr) throw insErr;
-
-          const newList = (inserted as BasketRow[]) ?? [];
-          if (!cancelled) setBaskets(newList);
-        } else {
-          if (!cancelled) setBaskets(existing as BasketRow[]);
-        }
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message ?? "Unknown error");
-      } finally {
-        if (!cancelled) {
-          setCreating(false);
-          setLoading(false);
-        }
-      }
+    const { data: userRes, error: userErr } = await supabase.auth.getUser();
+    if (userErr) {
+      setError(userErr.message);
+      setLoading(false);
+      return;
     }
 
-    run();
+    if (!userRes.user) {
+      setError("Not logged in.");
+      setLoading(false);
+      return;
+    }
 
-    return () => {
-      cancelled = true;
-    };
+    setEmail(userRes.user.email ?? "");
+
+    // ensure default basket exists
+    const ensureRes = await fetch("/api/ensure-basket", { method: "POST" });
+    if (!ensureRes.ok) {
+      const body = await ensureRes.json().catch(() => ({}));
+      setError(body?.error ?? "ensure-basket failed");
+      setLoading(false);
+      return;
+    }
+
+    // load baskets list
+    const { data, error: selErr } = await supabase
+      .from("baskets")
+      .select("id,name,created_at")
+      .order("created_at", { ascending: false });
+
+    if (selErr) {
+      setError(selErr.message);
+      setLoading(false);
+      return;
+    }
+
+    setBaskets((data ?? []) as BasketRow[]);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadUserAndBaskets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function logout() {
-    const supabase = getSupabaseBrowserClient();
+  const createBasket = async () => {
+    setError(null);
+
+    const name = newBasketName.trim();
+    if (!name) return;
+
+    // user_id se vyplní z appky -> ale vkládáme ho explicitně (bezpečnější s RLS)
+    const { data: userRes } = await supabase.auth.getUser();
+    const user = userRes.user;
+    if (!user) {
+      setError("Not logged in.");
+      return;
+    }
+
+    const { error: insErr } = await supabase.from("baskets").insert({
+      user_id: user.id,
+      name,
+    });
+
+    if (insErr) {
+      setError(insErr.message);
+      return;
+    }
+
+    setNewBasketName("");
+    await loadUserAndBaskets();
+  };
+
+  const logout = async () => {
     await supabase.auth.signOut();
-    window.location.replace("/login");
+    window.location.href = "/";
+  };
+
+  if (loading) {
+    return <div style={{ padding: 24 }}>Loading...</div>;
   }
 
   return (
-    <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 900 }}>
-      <h1 style={{ marginBottom: 6 }}>Dashboard</h1>
-      <p style={{ marginTop: 0, opacity: 0.8 }}>Logged in as: {email || "—"}</p>
+    <div style={{ padding: 24, maxWidth: 900 }}>
+      <h2>Dashboard</h2>
 
-      <div style={{ display: "flex", gap: 12, marginTop: 10 }}>
-        <button onClick={logout} style={{ padding: "8px 12px" }}>
-          Logout
-        </button>
-        <Link href="/" style={{ alignSelf: "center" }}>
-          Home
-        </Link>
+      <div style={{ marginBottom: 16 }}>
+        <div>Logged in as: {email}</div>
+        <div style={{ marginTop: 8 }}>
+          <button onClick={logout}>Logout</button>{" "}
+          <Link href="/" style={{ marginLeft: 12 }}>
+            Home
+          </Link>
+        </div>
       </div>
 
-      {loading && <p style={{ marginTop: 18 }}>Loading…</p>}
+      {error && (
+        <div style={{ color: "crimson", marginBottom: 16 }}>{error}</div>
+      )}
 
-      {!loading && error && (
-        <div
-          style={{
-            marginTop: 18,
-            padding: 12,
-            border: "1px solid #f3b4b4",
-            borderRadius: 8,
-          }}
-        >
-          <p style={{ margin: 0, color: "crimson" }}>
-            <b>Error:</b> {error}
-          </p>
+      <div
+        style={{
+          border: "1px solid #ddd",
+          borderRadius: 10,
+          padding: 16,
+          marginBottom: 20,
+        }}
+      >
+        <h3>Create basket</h3>
+        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <input
+            value={newBasketName}
+            onChange={(e) => setNewBasketName(e.target.value)}
+            placeholder="e.g. Nakup"
+            style={{ padding: 10, width: 320 }}
+          />
+          <button onClick={createBasket}>Create</button>
+        </div>
+      </div>
+
+      <h3>Your baskets</h3>
+
+      {baskets.length === 0 ? (
+        <div>No baskets yet.</div>
+      ) : (
+        <div style={{ display: "grid", gap: 12 }}>
+          {baskets.map((b) => (
+            <div
+              key={b.id}
+              style={{
+                border: "1px solid #ddd",
+                borderRadius: 10,
+                padding: 14,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 18 }}>
+                  {b.name ?? "(no name)"}
+                </div>
+                <div style={{ fontFamily: "monospace", fontSize: 12 }}>
+                  id: {b.id}
+                </div>
+              </div>
+
+              <Link href={`/basket/${b.id}`} style={{ fontWeight: 600 }}>
+                Open →
+              </Link>
+            </div>
+          ))}
         </div>
       )}
-
-      {!loading && !error && (
-        <>
-          {creating && (
-            <p style={{ marginTop: 18 }}>Creating your first basket…</p>
-          )}
-
-          <section style={{ marginTop: 18 }}>
-            <h2 style={{ marginBottom: 10, fontSize: 18 }}>Your baskets</h2>
-
-            {baskets.length === 0 ? (
-              <p>No baskets yet.</p>
-            ) : (
-              <div style={{ display: "grid", gap: 10 }}>
-                {baskets.map((b) => (
-                  <div
-                    key={b.id}
-                    style={{
-                      padding: 12,
-                      border: "1px solid #eee",
-                      borderRadius: 8,
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      gap: 12,
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 600 }}>{b.name}</div>
-                      <div style={{ opacity: 0.75, fontSize: 13 }}>
-                        id: <code>{b.id}</code>
-                      </div>
-                    </div>
-
-                    <Link href={`/basket/${b.id}`}>Open →</Link>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        </>
-      )}
-    </main>
+    </div>
   );
 }
