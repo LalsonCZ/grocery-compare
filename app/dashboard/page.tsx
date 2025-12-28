@@ -8,6 +8,7 @@ type BasketRow = {
   id: string;
   name: string | null;
   created_at: string | null;
+  user_id?: string | null;
 };
 
 export default function DashboardPage() {
@@ -19,7 +20,7 @@ export default function DashboardPage() {
   const [baskets, setBaskets] = useState<BasketRow[]>([]);
   const [newBasketName, setNewBasketName] = useState("");
 
-  const loadUserAndBaskets = async () => {
+  const loadBasketsAndEnsureDefault = async () => {
     setError(null);
     setLoading(true);
 
@@ -30,41 +31,67 @@ export default function DashboardPage() {
       return;
     }
 
-    if (!userRes.user) {
+    const user = userRes.user;
+    if (!user) {
       setError("Not logged in.");
       setLoading(false);
       return;
     }
 
-    setEmail(userRes.user.email ?? "");
+    setEmail(user.email ?? "");
 
-    // ensure default basket exists
-    const ensureRes = await fetch("/api/ensure-basket", { method: "POST" });
-    if (!ensureRes.ok) {
-      const body = await ensureRes.json().catch(() => ({}));
-      setError(body?.error ?? "ensure-basket failed");
-      setLoading(false);
-      return;
-    }
-
-    // load baskets list
-    const { data, error: selErr } = await supabase
+    // 1) load baskets
+    const { data: list1, error: selErr1 } = await supabase
       .from("baskets")
-      .select("id,name,created_at")
+      .select("id,name,created_at,user_id")
+      .eq("user_id", user.id)
       .order("created_at", { ascending: false });
 
-    if (selErr) {
-      setError(selErr.message);
+    if (selErr1) {
+      setError(selErr1.message);
       setLoading(false);
       return;
     }
 
-    setBaskets((data ?? []) as BasketRow[]);
+    const existing = (list1 ?? []) as BasketRow[];
+
+    // 2) if none -> create default basket
+    if (existing.length === 0) {
+      const { error: insErr } = await supabase.from("baskets").insert({
+        user_id: user.id,
+        name: "Nakup",
+      });
+
+      if (insErr) {
+        setError(insErr.message);
+        setLoading(false);
+        return;
+      }
+
+      // 3) reload after insert
+      const { data: list2, error: selErr2 } = await supabase
+        .from("baskets")
+        .select("id,name,created_at,user_id")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+
+      if (selErr2) {
+        setError(selErr2.message);
+        setLoading(false);
+        return;
+      }
+
+      setBaskets((list2 ?? []) as BasketRow[]);
+      setLoading(false);
+      return;
+    }
+
+    setBaskets(existing);
     setLoading(false);
   };
 
   useEffect(() => {
-    loadUserAndBaskets();
+    loadBasketsAndEnsureDefault();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -74,8 +101,12 @@ export default function DashboardPage() {
     const name = newBasketName.trim();
     if (!name) return;
 
-    // user_id se vyplní z appky -> ale vkládáme ho explicitně (bezpečnější s RLS)
-    const { data: userRes } = await supabase.auth.getUser();
+    const { data: userRes, error: userErr } = await supabase.auth.getUser();
+    if (userErr) {
+      setError(userErr.message);
+      return;
+    }
+
     const user = userRes.user;
     if (!user) {
       setError("Not logged in.");
@@ -93,7 +124,7 @@ export default function DashboardPage() {
     }
 
     setNewBasketName("");
-    await loadUserAndBaskets();
+    await loadBasketsAndEnsureDefault();
   };
 
   const logout = async () => {
@@ -101,9 +132,7 @@ export default function DashboardPage() {
     window.location.href = "/";
   };
 
-  if (loading) {
-    return <div style={{ padding: 24 }}>Loading...</div>;
-  }
+  if (loading) return <div style={{ padding: 24 }}>Loading...</div>;
 
   return (
     <div style={{ padding: 24, maxWidth: 900 }}>
@@ -119,9 +148,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {error && (
-        <div style={{ color: "crimson", marginBottom: 16 }}>{error}</div>
-      )}
+      {error && <div style={{ color: "crimson", marginBottom: 16 }}>{error}</div>}
 
       <div
         style={{
@@ -136,7 +163,7 @@ export default function DashboardPage() {
           <input
             value={newBasketName}
             onChange={(e) => setNewBasketName(e.target.value)}
-            placeholder="e.g. Nakup"
+            placeholder="e.g. Novy basket"
             style={{ padding: 10, width: 320 }}
           />
           <button onClick={createBasket}>Create</button>
@@ -144,7 +171,6 @@ export default function DashboardPage() {
       </div>
 
       <h3>Your baskets</h3>
-
       {baskets.length === 0 ? (
         <div>No baskets yet.</div>
       ) : (
@@ -162,14 +188,9 @@ export default function DashboardPage() {
               }}
             >
               <div>
-                <div style={{ fontWeight: 700, fontSize: 18 }}>
-                  {b.name ?? "(no name)"}
-                </div>
-                <div style={{ fontFamily: "monospace", fontSize: 12 }}>
-                  id: {b.id}
-                </div>
+                <div style={{ fontWeight: 700, fontSize: 18 }}>{b.name ?? "(no name)"}</div>
+                <div style={{ fontFamily: "monospace", fontSize: 12 }}>id: {b.id}</div>
               </div>
-
               <Link href={`/basket/${b.id}`} style={{ fontWeight: 600 }}>
                 Open →
               </Link>
