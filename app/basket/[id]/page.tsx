@@ -32,7 +32,7 @@ export default function BasketIdPage() {
   const [basket, setBasket] = useState<BasketRow | null>(null);
   const [items, setItems] = useState<BasketItemRow[]>([]);
 
-  // 🔧 If your DB tables are named differently, change ONLY these:
+  // 🔧 If your Supabase tables are named differently, change only these 2 values:
   const TABLE_BASKETS = "baskets";
   const TABLE_ITEMS = "basket_items";
 
@@ -57,14 +57,14 @@ export default function BasketIdPage() {
 
         const supabase = getSupabaseBrowserClient();
 
-        // If user not logged in, redirect to login
+        // Require login
         const userRes = await supabase.auth.getUser();
         if (!userRes.data.user) {
           window.location.replace("/login");
           return;
         }
 
-        // 1) Load basket header (optional)
+        // Load basket (optional)
         const basketRes = await supabase
           .from(TABLE_BASKETS)
           .select("*")
@@ -72,13 +72,13 @@ export default function BasketIdPage() {
           .maybeSingle();
 
         if (basketRes.error) {
-          // Not fatal; show error but still try items
+          // Not fatal — we can still load items
           console.warn("Basket load error:", basketRes.error.message);
         } else {
           setBasket((basketRes.data as BasketRow) ?? null);
         }
 
-        // 2) Load basket items
+        // Load items
         const itemsRes = await supabase
           .from(TABLE_ITEMS)
           .select("*")
@@ -117,12 +117,18 @@ export default function BasketIdPage() {
       {loading && <p>Loading…</p>}
 
       {!loading && error && (
-        <div style={{ padding: 12, border: "1px solid #f3b4b4", borderRadius: 8 }}>
+        <div
+          style={{
+            padding: 12,
+            border: "1px solid #f3b4b4",
+            borderRadius: 8,
+          }}
+        >
           <p style={{ margin: 0, color: "crimson" }}>
             <b>Error:</b> {error}
           </p>
           <p style={{ marginTop: 10, opacity: 0.8 }}>
-            Tip: If your table names are not <code>baskets</code> /{" "}
+            If your table names are not <code>baskets</code> /{" "}
             <code>basket_items</code>, edit <code>TABLE_BASKETS</code> and{" "}
             <code>TABLE_ITEMS</code> near the top of this file.
           </p>
@@ -131,8 +137,18 @@ export default function BasketIdPage() {
 
       {!loading && !error && (
         <>
-          <section style={{ marginTop: 18, padding: 12, border: "1px solid #ddd", borderRadius: 8 }}>
-            <h2 style={{ marginTop: 0, marginBottom: 8, fontSize: 18 }}>Details</h2>
+          <section
+            style={{
+              marginTop: 18,
+              padding: 12,
+              border: "1px solid #ddd",
+              borderRadius: 8,
+            }}
+          >
+            <h2 style={{ marginTop: 0, marginBottom: 8, fontSize: 18 }}>
+              Details
+            </h2>
+
             <div style={{ display: "grid", gap: 6 }}>
               <div>
                 <b>Name:</b> {basket?.name ?? "(no name)"}
@@ -169,7 +185,9 @@ export default function BasketIdPage() {
                     }}
                   >
                     <div>
-                      <div style={{ fontWeight: 600 }}>{it.name ?? "(unnamed item)"}</div>
+                      <div style={{ fontWeight: 600 }}>
+                        {it.name ?? "(unnamed item)"}
+                      </div>
                       <div style={{ opacity: 0.75, fontSize: 13 }}>
                         item id: <code>{it.id}</code>
                       </div>
@@ -185,7 +203,9 @@ export default function BasketIdPage() {
                       <div style={{ marginTop: 6 }}>
                         Subtotal:{" "}
                         <b>
-                          {(Number(it.price ?? 0) * Number(it.qty ?? 1)).toFixed(2)}
+                          {(Number(it.price ?? 0) * Number(it.qty ?? 1)).toFixed(
+                            2
+                          )}
                         </b>
                       </div>
                     </div>
