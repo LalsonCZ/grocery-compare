@@ -1,33 +1,40 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabaseClient";
 
+export const dynamic = "force-dynamic";
+
 export default function AuthCallbackPage() {
+  const [msg, setMsg] = useState("Signing you in...");
+
   useEffect(() => {
-    const supabase = getSupabaseBrowserClient();
+    const run = async () => {
+      try {
+        const supabase = getSupabaseBrowserClient();
 
-    async function finish() {
-      // Handles BOTH:
-      // 1) ?code=... (PKCE)
-      // 2) #access_token=... (implicit) — Supabase reads hash automatically
-      const code = new URLSearchParams(window.location.search).get("code");
+        // With PKCE + detectSessionInUrl, Supabase will process the URL automatically.
+        const { data, error } = await supabase.auth.getSession();
 
-      if (code) {
-        await supabase.auth.exchangeCodeForSession(code);
-      } else {
-        // If it's hash-based, just asking for session will persist it
-        await supabase.auth.getSession();
+        if (error) {
+          setMsg(`Auth error: ${error.message}`);
+          return;
+        }
+
+        if (!data.session) {
+          setMsg("No session found. Please try logging in again.");
+          return;
+        }
+
+        // Clean URL + go dashboard
+        window.location.replace("/dashboard");
+      } catch (e: any) {
+        setMsg(`Unexpected error: ${e?.message ?? String(e)}`);
       }
+    };
 
-      // Now go to dashboard
-      window.location.replace("/dashboard");
-    }
-
-    finish();
+    run();
   }, []);
 
-  return <p style={{ padding: 24 }}>Finishing login...</p>;
+  return <p style={{ padding: 24, fontFamily: "system-ui" }}>{msg}</p>;
 }
