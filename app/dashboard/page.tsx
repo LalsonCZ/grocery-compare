@@ -19,6 +19,7 @@ export default function DashboardPage() {
 
   const [baskets, setBaskets] = useState<BasketRow[]>([]);
   const [newBasketName, setNewBasketName] = useState("");
+  const [busyBasketId, setBusyBasketId] = useState<string | null>(null);
 
   const loadBasketsAndEnsureDefault = async () => {
     setError(null);
@@ -40,7 +41,7 @@ export default function DashboardPage() {
 
     setEmail(user.email ?? "");
 
-    // 1) load baskets
+    // load baskets
     const { data: list1, error: selErr1 } = await supabase
       .from("baskets")
       .select("id,name,created_at,user_id")
@@ -55,7 +56,7 @@ export default function DashboardPage() {
 
     const existing = (list1 ?? []) as BasketRow[];
 
-    // 2) if none -> create default basket
+    // if none -> create default basket
     if (existing.length === 0) {
       const { error: insErr } = await supabase.from("baskets").insert({
         user_id: user.id,
@@ -68,7 +69,6 @@ export default function DashboardPage() {
         return;
       }
 
-      // 3) reload after insert
       const { data: list2, error: selErr2 } = await supabase
         .from("baskets")
         .select("id,name,created_at,user_id")
@@ -127,6 +127,36 @@ export default function DashboardPage() {
     await loadBasketsAndEnsureDefault();
   };
 
+  const deleteBasket = async (basketId: string, basketName: string) => {
+    setError(null);
+
+    const ok = confirm(
+      `Delete basket "${basketName}"?\n\nThis will also delete all items inside it.`
+    );
+    if (!ok) return;
+
+    setBusyBasketId(basketId);
+
+    const { error: delErr } = await supabase
+      .from("baskets")
+      .delete()
+      .eq("id", basketId);
+
+    if (delErr) {
+      setError(delErr.message);
+      setBusyBasketId(null);
+      return;
+    }
+
+    setBaskets((prev) => prev.filter((b) => b.id !== basketId));
+    setBusyBasketId(null);
+
+    // if you deleted the last one, recreate default
+    if (baskets.length === 1) {
+      await loadBasketsAndEnsureDefault();
+    }
+  };
+
   const logout = async () => {
     await supabase.auth.signOut();
     window.location.href = "/";
@@ -175,27 +205,42 @@ export default function DashboardPage() {
         <div>No baskets yet.</div>
       ) : (
         <div style={{ display: "grid", gap: 12 }}>
-          {baskets.map((b) => (
-            <div
-              key={b.id}
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: 10,
-                padding: 14,
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <div>
-                <div style={{ fontWeight: 700, fontSize: 18 }}>{b.name ?? "(no name)"}</div>
-                <div style={{ fontFamily: "monospace", fontSize: 12 }}>id: {b.id}</div>
+          {baskets.map((b) => {
+            const busy = busyBasketId === b.id;
+            const displayName = b.name ?? "(no name)";
+            return (
+              <div
+                key={b.id}
+                style={{
+                  border: "1px solid #ddd",
+                  borderRadius: 10,
+                  padding: 14,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 12,
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 18 }}>{displayName}</div>
+                  <div style={{ fontFamily: "monospace", fontSize: 12 }}>id: {b.id}</div>
+                </div>
+
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <Link href={`/basket/${b.id}`} style={{ fontWeight: 600 }}>
+                    Open →
+                  </Link>
+                  <button
+                    disabled={busy}
+                    onClick={() => deleteBasket(b.id, displayName)}
+                    style={{ color: "crimson" }}
+                  >
+                    {busy ? "Deleting..." : "Delete"}
+                  </button>
+                </div>
               </div>
-              <Link href={`/basket/${b.id}`} style={{ fontWeight: 600 }}>
-                Open →
-              </Link>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
