@@ -11,10 +11,7 @@ export default function AuthCallbackPage() {
       const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
       const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-      if (!url || !anon) {
-        console.error("Missing Supabase env vars");
-        return;
-      }
+      if (!url || !anon) return;
 
       const supabase = createClient(url, anon);
 
