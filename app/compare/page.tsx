@@ -22,36 +22,89 @@ type BasketItemRow = {
 
 type AggRow = {
   key: string; // normalized key
-  displayName: string; // best display name we saw
+  displayName: string;
   qty: number;
-  total: number; // total cost
+  total: number; // qty * price summed
 };
+
+type CompareMode = "unit" | "line";
 
 type CompareRow = {
   key: string;
   name: string;
+
   aQty: number;
-  aUnit: number; // unit price (avg)
+  aUnit: number;
   aTotal: number;
+
   bQty: number;
   bUnit: number;
   bTotal: number;
+
   cheaper: "A" | "B" | "Same" | "-";
-  deltaUnit: number; // aUnit - bUnit
+  delta: number; // A - B (unit or line, depends on mode)
+  matchType: "exact" | "fuzzy";
+  aRawKey?: string;
+  bRawKey?: string;
 };
 
-function normalizeName(input: string) {
-  const trimmed = input.trim().toLowerCase();
-  // remove diacritics (Czech: mléko -> mleko)
-  // NFD splits letters + diacritics, then remove diacritic marks
-  return trimmed
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/\s+/g, " ");
+function money(n: number) {
+  return n.toFixed(2);
 }
 
-function calcTotal(items: BasketItemRow[]) {
-  return items.reduce((sum, it) => sum + (it.price ?? 0) * (it.qty ?? 0), 0);
+function normalizeBase(input: string) {
+  return input
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // remove diacritics
+    .replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// a stronger normalization for keys
+function normalizeKey(input: string) {
+  return normalizeBase(input);
+}
+
+function tokenize(input: string) {
+  const s = normalizeBase(input);
+  if (!s) return [];
+  return s.split(" ").filter(Boolean);
+}
+
+// very simple similarity: Jaccard tokens + prefix bonus
+function similarity(aName: string, bName: string) {
+  const a = tokenize(aName);
+  const b = tokenize(bName);
+  if (a.length === 0 || b.length === 0) return 0;
+
+  const setA = new Set(a);
+  const setB = new Set(b);
+
+  let inter = 0;
+  for (const t of setA) if (setB.has(t)) inter++;
+
+  const union = setA.size + setB.size - inter;
+  const jaccard = union === 0 ? 0 : inter / union;
+
+  // prefix / contains bonus (helps "rohlik" vs "rohliky")
+  const aStr = a.join(" ");
+  const bStr = b.join(" ");
+  const containsBonus =
+    aStr.includes(bStr) || bStr.includes(aStr) ? 0.15 : 0;
+
+  // small suffix plural-ish bonus (rohlik vs rohliky)
+  const lastA = a[a.length - 1] ?? "";
+  const lastB = b[b.length - 1] ?? "";
+  const pluralBonus =
+    (lastA.startsWith(lastB) || lastB.startsWith(lastA)) &&
+    Math.min(lastA.length, lastB.length) >= 4
+      ? 0.1
+      : 0;
+
+  return Math.min(1, jaccard + containsBonus + pluralBonus);
 }
 
 function aggregate(items: BasketItemRow[]) {
@@ -62,7 +115,7 @@ function aggregate(items: BasketItemRow[]) {
     const name = rawName.trim();
     if (!name) continue;
 
-    const key = normalizeName(name);
+    const key = normalizeKey(name);
     const qty = Number(it.qty ?? 0) || 0;
     const price = Number(it.price ?? 0) || 0;
     const line = qty * price;
@@ -71,12 +124,11 @@ function aggregate(items: BasketItemRow[]) {
     if (!prev) {
       map.set(key, {
         key,
-        displayName: name, // first seen
+        displayName: name,
         qty,
         total: line,
       });
     } else {
-      // keep "nicer" displayName: prefer one with uppercase or diacritics or longer
       const betterName =
         prev.displayName.length >= name.length ? prev.displayName : name;
 
@@ -92,13 +144,219 @@ function aggregate(items: BasketItemRow[]) {
   return map;
 }
 
-function unitPrice(row: AggRow) {
+function calcTotal(items: BasketItemRow[]) {
+  return items.reduce((sum, it) => sum + (it.price ?? 0) * (it.qty ?? 0), 0);
+}
+
+function unitPrice(row?: AggRow) {
   if (!row || row.qty <= 0) return 0;
   return row.total / row.qty;
 }
 
-function money(n: number) {
-  return n.toFixed(2);
+/**
+ * Match A & B aggregated maps:
+ * 1) exact by normalized key
+ * 2) fuzzy matching for remaining keys (greedy best-match)
+ */
+function buildMatchedRows(aggA: Map<string, AggRow>, aggB: Map<string, AggRow>, mode: CompareMode) {
+  const usedB = new Set<string>();
+  const rows: CompareRow[] = [];
+
+  // 1) exact matches
+  for (const [key, a] of aggA.entries()) {
+    const b = aggB.get(key);
+    if (!b) continue;
+
+    usedB.add(key);
+
+    const aQty = a.qty;
+    const aTotal = a.total;
+    const aUnit = unitPrice(a);
+
+    const bQty = b.qty;
+    const bTotal = b.total;
+    const bUnit = unitPrice(b);
+
+    const aMetric = mode === "unit" ? aUnit : aTotal;
+    const bMetric = mode === "unit" ? bUnit : bTotal;
+
+    const delta = aMetric - bMetric;
+
+    let cheaper: CompareRow["cheaper"] = "Same";
+    if (Math.abs(delta) < 0.000001) cheaper = "Same";
+    else cheaper = delta < 0 ? "A" : "B";
+
+    rows.push({
+      key,
+      name: a.displayName || b.displayName || key,
+      aQty,
+      aUnit,
+      aTotal,
+      bQty,
+      bUnit,
+      bTotal,
+      cheaper,
+      delta,
+      matchType: "exact",
+      aRawKey: a.key,
+      bRawKey: b.key,
+    });
+  }
+
+  // 2) fuzzy matches for remaining keys
+  const remainingA: AggRow[] = [];
+  const remainingB: AggRow[] = [];
+
+  for (const a of aggA.values()) {
+    if (!aggB.has(a.key)) remainingA.push(a);
+  }
+  for (const b of aggB.values()) {
+    if (!usedB.has(b.key) && !aggA.has(b.key)) remainingB.push(b);
+  }
+
+  // build candidate list with score
+  type Cand = { aKey: string; bKey: string; score: number };
+  const cands: Cand[] = [];
+
+  for (const a of remainingA) {
+    for (const b of remainingB) {
+      const score = similarity(a.displayName, b.displayName);
+      if (score >= 0.6) {
+        cands.push({ aKey: a.key, bKey: b.key, score });
+      }
+    }
+  }
+
+  // greedy by best score
+  cands.sort((x, y) => y.score - x.score);
+
+  const matchedA = new Set<string>();
+  const matchedB = new Set<string>();
+
+  for (const c of cands) {
+    if (matchedA.has(c.aKey) || matchedB.has(c.bKey)) continue;
+
+    const a = aggA.get(c.aKey);
+    const b = aggB.get(c.bKey);
+    if (!a || !b) continue;
+
+    matchedA.add(c.aKey);
+    matchedB.add(c.bKey);
+
+    const key = `${a.key}~${b.key}`; // synthetic key for row identity
+
+    const aQty = a.qty;
+    const aTotal = a.total;
+    const aUnit = unitPrice(a);
+
+    const bQty = b.qty;
+    const bTotal = b.total;
+    const bUnit = unitPrice(b);
+
+    const aMetric = mode === "unit" ? aUnit : aTotal;
+    const bMetric = mode === "unit" ? bUnit : bTotal;
+
+    const delta = aMetric - bMetric;
+
+    let cheaper: CompareRow["cheaper"] = "Same";
+    if (Math.abs(delta) < 0.000001) cheaper = "Same";
+    else cheaper = delta < 0 ? "A" : "B";
+
+    rows.push({
+      key,
+      name: a.displayName.length >= b.displayName.length ? a.displayName : b.displayName,
+      aQty,
+      aUnit,
+      aTotal,
+      bQty,
+      bUnit,
+      bTotal,
+      cheaper,
+      delta,
+      matchType: "fuzzy",
+      aRawKey: a.key,
+      bRawKey: b.key,
+    });
+  }
+
+  // 3) leftovers: only-in-A and only-in-B (excluding fuzzy matched)
+  for (const a of aggA.values()) {
+    const isExact = aggB.has(a.key);
+    const isFuzzy = matchedA.has(a.key);
+    if (isExact || isFuzzy) continue;
+
+    rows.push({
+      key: a.key,
+      name: a.displayName,
+      aQty: a.qty,
+      aUnit: unitPrice(a),
+      aTotal: a.total,
+      bQty: 0,
+      bUnit: 0,
+      bTotal: 0,
+      cheaper: "A",
+      delta: mode === "unit" ? unitPrice(a) : a.total,
+      matchType: "exact",
+      aRawKey: a.key,
+      bRawKey: undefined,
+    });
+  }
+
+  for (const b of aggB.values()) {
+    const isExact = aggA.has(b.key);
+    const isFuzzy = matchedB.has(b.key);
+    if (isExact || isFuzzy) continue;
+
+    rows.push({
+      key: b.key,
+      name: b.displayName,
+      aQty: 0,
+      aUnit: 0,
+      aTotal: 0,
+      bQty: b.qty,
+      bUnit: unitPrice(b),
+      bTotal: b.total,
+      cheaper: "B",
+      delta: mode === "unit" ? -unitPrice(b) : -b.total, // A-B
+      matchType: "exact",
+      aRawKey: undefined,
+      bRawKey: b.key,
+    });
+  }
+
+  // sort: matched (both qty>0) first, then by absolute delta desc, then name
+  rows.sort((r1, r2) => {
+    const both1 = r1.aQty > 0 && r1.bQty > 0 ? 1 : 0;
+    const both2 = r2.aQty > 0 && r2.bQty > 0 ? 1 : 0;
+    if (both1 !== both2) return both2 - both1;
+
+    const d1 = Math.abs(r1.delta);
+    const d2 = Math.abs(r2.delta);
+    if (d1 !== d2) return d2 - d1;
+
+    return r1.name.localeCompare(r2.name);
+  });
+
+  return rows;
+}
+
+/**
+ * Savings:
+ * For matched rows where both sides exist, we compute savings for common quantity:
+ * commonQty = min(aQty, bQty)
+ * savings += commonQty * (max(unitA, unitB) - min(unitA, unitB))
+ * This answers: "if you bought the common items in the cheaper store, how much would you save?"
+ */
+function computeSavings(rows: CompareRow[]) {
+  let savings = 0;
+  for (const r of rows) {
+    if (r.aQty > 0 && r.bQty > 0) {
+      const commonQty = Math.min(r.aQty, r.bQty);
+      const diff = Math.abs(r.aUnit - r.bUnit);
+      savings += commonQty * diff;
+    }
+  }
+  return savings;
 }
 
 export default function ComparePage() {
@@ -112,6 +370,8 @@ export default function ComparePage() {
 
   const [itemsA, setItemsA] = useState<BasketItemRow[]>([]);
   const [itemsB, setItemsB] = useState<BasketItemRow[]>([]);
+
+  const [mode, setMode] = useState<CompareMode>("unit"); // (3) toggle
 
   const loadBaskets = async () => {
     setError(null);
@@ -213,91 +473,26 @@ export default function ComparePage() {
   const totalB = calcTotal(itemsB);
   const diff = totalA - totalB;
 
-  const nameById = (id: string) =>
-    baskets.find((x) => x.id === id)?.name ?? id;
+  const nameById = (id: string) => baskets.find((x) => x.id === id)?.name ?? id;
 
-  // SMART AGGREGATION + MATCHING
   const aggA = useMemo(() => aggregate(itemsA), [itemsA]);
   const aggB = useMemo(() => aggregate(itemsB), [itemsB]);
 
-  const rows: CompareRow[] = useMemo(() => {
-    const keys = new Set<string>();
-    for (const k of aggA.keys()) keys.add(k);
-    for (const k of aggB.keys()) keys.add(k);
-
-    const out: CompareRow[] = [];
-    for (const key of keys) {
-      const a = aggA.get(key);
-      const b = aggB.get(key);
-
-      const aQty = a?.qty ?? 0;
-      const aTotal = a?.total ?? 0;
-      const aUnit = aQty > 0 ? aTotal / aQty : 0;
-
-      const bQty = b?.qty ?? 0;
-      const bTotal = b?.total ?? 0;
-      const bUnit = bQty > 0 ? bTotal / bQty : 0;
-
-      const name =
-        a?.displayName || b?.displayName || key;
-
-      let cheaper: CompareRow["cheaper"] = "-";
-      let deltaUnit = 0;
-
-      if (aQty > 0 && bQty > 0) {
-        deltaUnit = aUnit - bUnit;
-        if (Math.abs(deltaUnit) < 0.000001) cheaper = "Same";
-        else cheaper = deltaUnit < 0 ? "A" : "B"; // if aUnit < bUnit => A cheaper
-      } else if (aQty > 0 && bQty === 0) {
-        cheaper = "A";
-      } else if (bQty > 0 && aQty === 0) {
-        cheaper = "B";
-      }
-
-      out.push({
-        key,
-        name,
-        aQty,
-        aUnit,
-        aTotal,
-        bQty,
-        bUnit,
-        bTotal,
-        cheaper,
-        deltaUnit,
-      });
-    }
-
-    // sort: both present first, then cheaper savings largest, then name
-    out.sort((r1, r2) => {
-      const both1 = r1.aQty > 0 && r1.bQty > 0 ? 1 : 0;
-      const both2 = r2.aQty > 0 && r2.bQty > 0 ? 1 : 0;
-      if (both1 !== both2) return both2 - both1;
-
-      // larger unit diff first (absolute)
-      const d1 = Math.abs(r1.deltaUnit);
-      const d2 = Math.abs(r2.deltaUnit);
-      if (d1 !== d2) return d2 - d1;
-
-      return r1.name.localeCompare(r2.name);
-    });
-
-    return out;
-  }, [aggA, aggB]);
+  const rows = useMemo(() => buildMatchedRows(aggA, aggB, mode), [aggA, aggB, mode]);
+  const savings = useMemo(() => computeSavings(rows), [rows]);
 
   const matchedCount = rows.filter((r) => r.aQty > 0 && r.bQty > 0).length;
+  const fuzzyCount = rows.filter((r) => r.matchType === "fuzzy").length;
   const onlyA = rows.filter((r) => r.aQty > 0 && r.bQty === 0).length;
   const onlyB = rows.filter((r) => r.bQty > 0 && r.aQty === 0).length;
 
-  if (loading && baskets.length === 0) return <div style={{ padding: 24 }}>Loading...</div>;
-
   return (
-    <div style={{ padding: 24, maxWidth: 1200 }}>
+    <div style={{ padding: 24, maxWidth: 1250 }}>
       <div style={{ marginBottom: 16 }}>
         <Link href="/dashboard">← Back to dashboard</Link>
       </div>
 
-      <h2>Compare baskets (smart)</h2>
+      <h2>Compare baskets (smart + fuzzy + savings)</h2>
 
       {error && <div style={{ color: "crimson", marginBottom: 16 }}>{error}</div>}
 
@@ -348,12 +543,25 @@ export default function ComparePage() {
         <button onClick={runCompare} disabled={!basketA || !basketB || basketA === basketB}>
           Compare
         </button>
+
+        {/* (3) Toggle mode */}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
+          <div style={{ fontWeight: 700 }}>Compare by:</div>
+          <select
+            value={mode}
+            onChange={(e) => setMode(e.target.value as CompareMode)}
+            style={{ padding: 10 }}
+          >
+            <option value="unit">Unit price</option>
+            <option value="line">Line total</option>
+          </select>
+        </div>
       </div>
 
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr",
+          gridTemplateColumns: "1fr 1fr 1fr 1fr",
           gap: 12,
           marginBottom: 16,
         }}
@@ -377,28 +585,39 @@ export default function ComparePage() {
             {diff === 0 ? "Same total" : diff > 0 ? "B is cheaper" : "A is cheaper"}
           </div>
         </div>
+
+        {/* (1) Savings */}
+        <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 14 }}>
+          <div style={{ fontWeight: 800 }}>Savings (common items)</div>
+          <div style={{ fontSize: 22, fontWeight: 900 }}>{money(savings)}</div>
+          <div style={{ color: "#555", marginTop: 4 }}>
+            Based on min(qtyA, qtyB) × unit diff
+          </div>
+        </div>
       </div>
 
       <div style={{ marginBottom: 10, color: "#555" }}>
-        Matched: <b>{matchedCount}</b> | Only in A: <b>{onlyA}</b> | Only in B: <b>{onlyB}</b>
+        Matched: <b>{matchedCount}</b> (fuzzy: <b>{fuzzyCount}</b>) | Only in A: <b>{onlyA}</b> | Only in B:{" "}
+        <b>{onlyB}</b> | Mode: <b>{mode === "unit" ? "Unit price" : "Line total"}</b>
       </div>
 
       <div style={{ border: "1px solid #ddd", borderRadius: 10, overflow: "hidden" }}>
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "2fr 1.6fr 1.6fr 0.9fr 1fr",
+            gridTemplateColumns: "2.1fr 1.5fr 1.5fr 0.8fr 1fr 0.9fr",
             padding: 12,
             fontWeight: 800,
             borderBottom: "1px solid #eee",
             background: "#fafafa",
           }}
         >
-          <div>Product (normalized match)</div>
+          <div>Product</div>
           <div>A (qty / unit / total)</div>
           <div>B (qty / unit / total)</div>
           <div>Cheaper</div>
-          <div>Δ unit (A-B)</div>
+          <div>Δ {mode === "unit" ? "unit" : "line"} (A-B)</div>
+          <div>Match</div>
         </div>
 
         {rows.length === 0 ? (
@@ -409,7 +628,7 @@ export default function ComparePage() {
               key={r.key}
               style={{
                 display: "grid",
-                gridTemplateColumns: "2fr 1.6fr 1.6fr 0.9fr 1fr",
+                gridTemplateColumns: "2.1fr 1.5fr 1.5fr 0.8fr 1fr 0.9fr",
                 padding: 12,
                 borderBottom: "1px solid #f2f2f2",
                 alignItems: "center",
@@ -419,7 +638,9 @@ export default function ComparePage() {
               <div>
                 <div style={{ fontWeight: 800 }}>{r.name}</div>
                 <div style={{ fontFamily: "monospace", fontSize: 12, color: "#888" }}>
-                  key: {r.key}
+                  {r.aRawKey && r.bRawKey && r.matchType === "fuzzy"
+                    ? `A:${r.aRawKey} | B:${r.bRawKey}`
+                    : `key: ${r.key}`}
                 </div>
               </div>
 
@@ -447,16 +668,14 @@ export default function ComparePage() {
                 )}
               </div>
 
-              <div style={{ fontWeight: 800 }}>
-                {r.aQty > 0 && r.bQty > 0
-                  ? r.cheaper === "Same"
-                    ? "Same"
-                    : r.cheaper
-                  : r.cheaper}
+              <div style={{ fontWeight: 900 }}>
+                {r.aQty > 0 && r.bQty > 0 ? (r.cheaper === "Same" ? "Same" : r.cheaper) : r.cheaper}
               </div>
 
-              <div style={{ fontFamily: "monospace" }}>
-                {r.aQty > 0 && r.bQty > 0 ? money(r.deltaUnit) : "-"}
+              <div style={{ fontFamily: "monospace" }}>{r.aQty > 0 && r.bQty > 0 ? money(r.delta) : "-"}</div>
+
+              <div style={{ fontWeight: 800 }}>
+                {r.matchType === "exact" ? "Exact" : "Fuzzy"}
               </div>
             </div>
           ))
@@ -464,7 +683,10 @@ export default function ComparePage() {
       </div>
 
       <div style={{ marginTop: 14, color: "#666", fontSize: 12 }}>
-        Tip: “Mléko / mleko / MLEKO” se sloučí automaticky (lowercase + bez diakritiky).
+        Notes:
+        <br />• Exact match = stejné normalizované jméno (lowercase + bez diakritiky + odstraněná interpunkce).
+        <br />• Fuzzy match = token similarity ≥ 0.6 (rohlík ~ rohliky, mléko 1l ~ mleko 1 l, coca-cola ~ coca cola).
+        <br />• Savings = úspora pro společné množství (min qty) při nákupu v levnějším košíku.
       </div>
     </div>
   );
