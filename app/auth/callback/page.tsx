@@ -3,28 +3,31 @@
 export const dynamic = "force-dynamic";
 
 import { useEffect } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { getSupabaseBrowserClient } from "@/lib/supabaseClient";
 
 export default function AuthCallbackPage() {
   useEffect(() => {
-    async function finishLogin() {
-      const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const supabase = getSupabaseBrowserClient();
 
-      if (!url || !anon) return;
-
-      const supabase = createClient(url, anon);
-
+    async function finish() {
+      // Handles BOTH:
+      // 1) ?code=... (PKCE)
+      // 2) #access_token=... (implicit) — Supabase reads hash automatically
       const code = new URLSearchParams(window.location.search).get("code");
+
       if (code) {
         await supabase.auth.exchangeCodeForSession(code);
+      } else {
+        // If it's hash-based, just asking for session will persist it
+        await supabase.auth.getSession();
       }
 
+      // Now go to dashboard
       window.location.replace("/dashboard");
     }
 
-    finishLogin();
+    finish();
   }, []);
 
-  return <p style={{ padding: 24 }}>Signing you in…</p>;
+  return <p style={{ padding: 24 }}>Finishing login...</p>;
 }
