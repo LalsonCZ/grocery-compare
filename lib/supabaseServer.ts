@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 
 export const getSupabaseRouteHandlerClient = () => {
-  // ✅ TS fix: cookies() is typed too strictly in some Next/TS versions
+  // TS workaround – cookies typings are too strict in Next
   const cookieStore = cookies() as any;
 
   return createServerClient(
