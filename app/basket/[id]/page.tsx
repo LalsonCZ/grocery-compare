@@ -24,20 +24,20 @@ function money(n: number) {
   return n.toFixed(2);
 }
 
+// ---- Price helpers (text input + normalization) ----
 function normalizePriceInput(raw: string) {
-  // allow digits, dot, comma; convert comma->dot
   let s = raw.replace(/[^\d.,]/g, "").replace(",", ".");
-  // if multiple dots, keep first
   const firstDot = s.indexOf(".");
   if (firstDot !== -1) {
     s = s.slice(0, firstDot + 1) + s.slice(firstDot + 1).replace(/\./g, "");
   }
-  // strip leading zeros (keep "0.xxx")
+
   if (s.includes(".")) {
     const [a, b] = s.split(".");
     const aa = a.replace(/^0+(?=\d)/, "") || "0";
     return `${aa}.${b ?? ""}`;
   }
+
   s = s.replace(/^0+(?=\d)/, "");
   return s;
 }
@@ -48,9 +48,10 @@ function toNumberPrice(raw: string) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// ---- Qty helpers ----
 function normalizeQtyInput(raw: string) {
   let s = raw.replace(/[^\d]/g, "");
-  s = s.replace(/^0+(?=\d)/, ""); // remove leading zeros
+  s = s.replace(/^0+(?=\d)/, "");
   return s;
 }
 
@@ -69,13 +70,16 @@ export default function BasketIdPage() {
 
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
 
   const [basket, setBasket] = useState<BasketRow | null>(null);
   const [items, setItems] = useState<BasketItemRow[]>([]);
 
+  // form
   const [name, setName] = useState("");
-  const [priceText, setPriceText] = useState(""); // ✅ text to avoid "030" UX issues
+  const [priceText, setPriceText] = useState(""); // ✅ text (prevents 030 UX weirdness)
   const [qtyText, setQtyText] = useState("1");
 
   const total = useMemo(() => {
@@ -132,11 +136,13 @@ export default function BasketIdPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [basketId]);
 
+  // ✅ Add item via server upsert (prevents duplicates)
   const addItem = async () => {
     if (!basketId) return;
 
     setBusy(true);
     setError(null);
+    setInfo(null);
 
     const trimmed = name.trim();
     if (!trimmed) {
@@ -148,30 +154,42 @@ export default function BasketIdPage() {
     const price = toNumberPrice(priceText);
     const qty = toIntQty(qtyText);
 
-    const { error: insErr } = await supabase.from("basket_items").insert({
-      basket_id: basketId,
-      name: trimmed,
-      price,
-      qty,
-    });
+    try {
+      const res = await fetch("/api/upsert-item", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ basketId, name: trimmed, price, qty }),
+      });
 
-    if (insErr) {
-      setError(insErr.message);
+      const text = await res.text();
+      const json = text ? JSON.parse(text) : {};
+
+      if (!res.ok) {
+        setError(json?.error ?? "Add failed");
+        setBusy(false);
+        return;
+      }
+
+      setInfo(json?.message ?? "Done.");
+
+      if (json?.action === "inserted" || json?.action === "merged") {
+        setName("");
+        setPriceText("");
+        setQtyText("1");
+      }
+
+      await load();
+    } catch (e: any) {
+      setError(e?.message ?? "Add failed");
+    } finally {
       setBusy(false);
-      return;
     }
-
-    setName("");
-    setPriceText("");
-    setQtyText("1");
-
-    await load();
-    setBusy(false);
   };
 
   const deleteItem = async (id: string) => {
     setBusy(true);
     setError(null);
+    setInfo(null);
 
     const { error } = await supabase.from("basket_items").delete().eq("id", id);
     if (error) {
@@ -184,11 +202,13 @@ export default function BasketIdPage() {
     setBusy(false);
   };
 
+  // OPTIONAL: keep if you still want cleanup button
   const cleanupMerge = async () => {
     if (!basketId) return;
 
     setBusy(true);
     setError(null);
+    setInfo(null);
 
     try {
       const res = await fetch("/api/cleanup-basket", {
@@ -197,13 +217,13 @@ export default function BasketIdPage() {
         body: JSON.stringify({ basketId }),
       });
 
-      // ✅ handle non-JSON safely
       const text = await res.text();
       const json = text ? JSON.parse(text) : {};
 
       if (!res.ok) {
         setError(json?.error ?? "Cleanup failed");
       } else {
+        setInfo(`Cleanup done. Merged ${json?.merged ?? 0} duplicates.`);
         await load();
       }
     } catch (e: any) {
@@ -221,9 +241,8 @@ export default function BasketIdPage() {
 
       <h2>Basket</h2>
 
-      {error && (
-        <div style={{ color: "crimson", marginBottom: 12 }}>{error}</div>
-      )}
+      {error && <div style={{ color: "crimson", marginBottom: 12 }}>{error}</div>}
+      {info && <div style={{ color: "green", marginBottom: 12 }}>{info}</div>}
 
       {loading ? (
         <div>Loading…</div>
@@ -244,7 +263,7 @@ export default function BasketIdPage() {
               id: {basketId}
             </div>
 
-            <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
+            <div style={{ marginTop: 12, display: "flex", gap: 12, flexWrap: "wrap" }}>
               <button onClick={cleanupMerge} disabled={busy}>
                 Cleanup & merge duplicates
               </button>
@@ -263,9 +282,7 @@ export default function BasketIdPage() {
             }}
           >
             <div style={{ fontWeight: 900 }}>Total</div>
-            <div style={{ fontWeight: 900, fontSize: 20 }}>
-              {money(total)}
-            </div>
+            <div style={{ fontWeight: 900, fontSize: 20 }}>{money(total)}</div>
           </div>
 
           <div
@@ -291,7 +308,6 @@ export default function BasketIdPage() {
                 onChange={(e) => setName(e.target.value)}
               />
 
-              {/* ✅ price as TEXT with normalization (no leading zero issue) */}
               <input
                 placeholder="Price"
                 inputMode="decimal"
@@ -335,6 +351,7 @@ export default function BasketIdPage() {
                       padding: 12,
                       display: "flex",
                       justifyContent: "space-between",
+                      alignItems: "center",
                     }}
                   >
                     <div>
