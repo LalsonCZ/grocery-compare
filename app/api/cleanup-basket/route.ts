@@ -1,105 +1,90 @@
 import { NextResponse } from "next/server";
 import { getSupabaseRouteHandlerClient } from "@/lib/supabaseServer";
 
-type Item = {
-  id: string;
-  basket_id: string;
-  name: string | null;
-  product_key: string | null;
-  qty: number | null;
-  price: number | null;
-};
-
 export async function POST(req: Request) {
-  const supabase = getSupabaseRouteHandlerClient();
+  try {
+    const supabase = getSupabaseRouteHandlerClient();
 
-  const {
-    data: { user },
-    error: userErr,
-  } = await supabase.auth.getUser();
+    const { basketId } = await req.json();
 
-  if (userErr || !user) {
-    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  }
+    if (!basketId) {
+      return NextResponse.json(
+        { error: "Missing basketId" },
+        { status: 400 }
+      );
+    }
 
-  const { basketId } = await req.json();
-  if (!basketId) {
-    return NextResponse.json({ error: "Missing basketId" }, { status: 400 });
-  }
+    // 1) Load items
+    const { data: items, error: loadErr } = await supabase
+      .from("basket_items")
+      .select("id,name,qty,price")
+      .eq("basket_id", basketId);
 
-  const { data, error } = await supabase
-    .from("basket_items")
-    .select("id,basket_id,name,product_key,qty,price")
-    .eq("basket_id", basketId);
+    if (loadErr) {
+      return NextResponse.json(
+        { error: loadErr.message },
+        { status: 500 }
+      );
+    }
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
+    if (!items || items.length === 0) {
+      return NextResponse.json({ ok: true, merged: 0 });
+    }
 
-  const items = (data ?? []) as Item[];
-  const groups = new Map<string, Item[]>();
+    // 2) Merge by normalized name
+    const map = new Map<
+      string,
+      { id: string; name: string; qty: number; price: number }
+    >();
 
-  for (const it of items) {
-    const key = it.product_key ?? it.name?.toLowerCase() ?? "";
-    if (!key) continue;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(it);
-  }
+    const toDelete: string[] = [];
 
-  let mergedGroups = 0;
-  let deletedRows = 0;
+    for (const it of items) {
+      const key = (it.name ?? "").trim().toLowerCase();
 
-  for (const [, arr] of groups) {
-    if (arr.length <= 1) continue;
-
-    const keeper = arr[0];
-    let qtySum = 0;
-    let totalSum = 0;
-    let bestName = "";
-
-    for (const it of arr) {
-      const q = Number(it.qty ?? 0);
-      const p = Number(it.price ?? 0);
-      qtySum += q;
-      totalSum += q * p;
-      if ((it.name ?? "").length > bestName.length) {
-        bestName = it.name ?? "";
+      if (!map.has(key)) {
+        map.set(key, {
+          id: it.id,
+          name: it.name ?? "",
+          qty: it.qty ?? 1,
+          price: it.price ?? 0,
+        });
+      } else {
+        const base = map.get(key)!;
+        base.qty += it.qty ?? 1;
+        base.price = Math.min(base.price, it.price ?? base.price);
+        toDelete.push(it.id);
       }
     }
 
-    const newPrice = qtySum > 0 ? totalSum / qtySum : 0;
-
-    const { error: upErr } = await supabase
-      .from("basket_items")
-      .update({
-        name: bestName,
-        qty: qtySum,
-        price: newPrice,
-      })
-      .eq("id", keeper.id);
-
-    if (upErr) {
-      return NextResponse.json({ error: upErr.message }, { status: 500 });
+    // 3) Update kept rows
+    for (const v of map.values()) {
+      await supabase
+        .from("basket_items")
+        .update({
+          qty: v.qty,
+          price: v.price,
+        })
+        .eq("id", v.id);
     }
 
-    const idsToDelete = arr.slice(1).map((x) => x.id);
-    if (idsToDelete.length > 0) {
-      const { error: delErr } = await supabase
+    // 4) Delete duplicates
+    if (toDelete.length > 0) {
+      await supabase
         .from("basket_items")
         .delete()
-        .in("id", idsToDelete);
-
-      if (delErr) {
-        return NextResponse.json({ error: delErr.message }, { status: 500 });
-      }
-      deletedRows += idsToDelete.length;
+        .in("id", toDelete);
     }
 
-    mergedGroups += 1;
+    // ✅ ALWAYS RETURN JSON
+    return NextResponse.json({
+      ok: true,
+      merged: toDelete.length,
+    });
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message ?? "Cleanup failed" },
+      { status: 500 }
+    );
   }
-
-  return NextResponse.json({
-    mergedGroups,
-    deletedRows,
-  });
 }
